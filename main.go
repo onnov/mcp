@@ -1,21 +1,25 @@
 // GitHub Public MCP: read-only access to public GitHub repositories.
 //
 // Setup in an empty directory containing this file (Go 1.25+ recommended):
-//   go mod init example.com/github-public-mcp
-//   go get github.com/modelcontextprotocol/go-sdk/mcp@v1.8.0
-//   go mod tidy
-//   go build -o github-public-mcp main.go
-//   ./github-public-mcp
+//
+//	go mod init example.com/github-public-mcp
+//	go get github.com/modelcontextprotocol/go-sdk/mcp@v1.8.0
+//	go mod tidy
+//	go build -o github-public-mcp main.go
+//	./github-public-mcp
 //
 // Default endpoints: http://127.0.0.1:8080/mcp and /healthz.
 // For ChatGPT web, put an HTTPS reverse proxy in front of this server:
-//   ./github-public-mcp -public-host mcp.example.com
+//
+//	./github-public-mcp -public-host mcp.example.com
+//
 // Then create a custom MCP plugin with https://mcp.example.com/mcp
 // and select "No authentication". The proxy must preserve Host.
 // Example Caddy configuration:
-//   mcp.example.com {
-//       reverse_proxy 127.0.0.1:8080
-//   }
+//
+//	mcp.example.com {
+//	    reverse_proxy 127.0.0.1:8080
+//	}
 //
 // This prototype has no user authentication and no GitHub credentials.
 // Anyone able to reach the endpoint can call its public read-only tools.
@@ -40,6 +44,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -101,7 +106,7 @@ type Entry struct {
 type DirectoryOutput struct {
 	Entries         []Entry `json:"entries"`
 	AvailableCount  int     `json:"available_count"`
-	NextOffset      int     `json:"next_offset"` // -1 means the available list is exhausted.
+	NextOffset      int     `json:"next_offset"`       // -1 means the available list is exhausted.
 	MayBeIncomplete bool    `json:"may_be_incomplete"` // GitHub caps directory results at 1000.
 }
 
@@ -293,7 +298,8 @@ func newMCPServer(g *githubClient) *mcp.Server {
 }
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8080", "HTTP listen address; put an HTTPS proxy in front")
+	runtime.GOMAXPROCS(2)
+	addr := flag.String("addr", "127.0.0.1:8181", "HTTP listen address; put an HTTPS proxy in front")
 	publicHost := flag.String("public-host", "", "External Host header, e.g. mcp.example.com (no scheme or path)")
 	flag.Parse()
 	if *publicHost != "" && (strings.ContainsAny(*publicHost, "/?#@ \\") || strings.IndexFunc(*publicHost, unicode.IsControl) >= 0) {
@@ -310,7 +316,7 @@ func main() {
 		allowedHosts[strings.ToLower(*publicHost)] = true
 	}
 	g := &githubClient{http: &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout:       15 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}}
 	s := newMCPServer(g)
