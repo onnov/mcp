@@ -91,7 +91,7 @@ func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Serve
 		}
 		return t
 	}
-	s := mcp.NewServer(&mcp.Implementation{Name: "pc-mcp", Title: "PC development workspace", Version: "1.1.0"}, &mcp.ServerOptions{Instructions: instructions, Capabilities: &mcp.ServerCapabilities{Extensions: map[string]any{"io.modelcontextprotocol/ui": map[string]any{}}}})
+	s := mcp.NewServer(&mcp.Implementation{Name: "pc-mcp", Title: "PC development workspace", Version: "1.1.1"}, &mcp.ServerOptions{Instructions: instructions, Capabilities: &mcp.ServerCapabilities{Extensions: map[string]any{"io.modelcontextprotocol/ui": map[string]any{}}}})
 	picker := descriptor("pc_open_workspace_picker", "Use this when the user asks to show available PC directories, browse folders, show the directory tree, or choose/change a workspace. Opens an interactive file-manager card with folder navigation at any depth, search, remembered selection and a branch selector. Set path to dot to browse from root, or omit it to restore the last directory. Let the user choose in the card; do not substitute a prose list.", true)
 	uiTool(picker, ui.PickerURI)
 	picker.Title = "PC: каталог и ветка"
@@ -196,7 +196,7 @@ func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Serve
 	mcp.AddTool(s, descriptor("pc_list_jobs", "List bounded job history without console logs; jobs survive chats, not a server restart.", true), func(_ context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, map[string]any, error) {
 		return nil, map[string]any{"jobs": jm.List()}, nil
 	})
-	for _, r := range []struct{ uri, name, html string }{{ui.PickerURI, "workspace-picker", ui.Picker}, {ui.LegacyPickerURI, "workspace-picker-legacy", ui.Picker}, {ui.PreviousPickerURI, "workspace-picker-v2", ui.Picker}, {ui.ApprovalURI, "command-confirmation", ui.Approval}, {ui.LegacyApprovalURI, "command-confirmation-legacy", ui.Approval}} {
+	for _, r := range []struct{ uri, name, html string }{{ui.PickerURI, "workspace-picker", ui.Picker}, {ui.LegacyPickerURI, "workspace-picker-legacy", ui.Picker}, {ui.PreviousPickerURI, "workspace-picker-v2", ui.Picker}, {ui.ApprovalURI, "command-confirmation", ui.Approval}, {ui.PreviousApprovalURI, "command-confirmation-v2", ui.Approval}, {ui.LegacyApprovalURI, "command-confirmation-legacy", ui.Approval}} {
 		meta := mcp.Meta{"ui": map[string]any{"prefersBorder": true, "csp": map[string]any{"connectDomains": []string{}, "resourceDomains": []string{}}}, "openai/ui": map[string]any{"availableDisplayModes": []string{"inline", "fullscreen"}}}
 		if r.uri == ui.PickerURI || r.uri == ui.LegacyPickerURI || r.uri == ui.PreviousPickerURI {
 			meta["openai/widgetDescription"] = "Interactive PC workspace browser: open nested folders, use clickable ancestor breadcrumbs, filter names, select a directory and its current/existing/new Git branch. The last confirmed workspace is remembered. Let the user make their selection in this card."
