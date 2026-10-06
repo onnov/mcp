@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/onnov/mcp/internal/pc/config"
 	"github.com/onnov/mcp/internal/pc/jobs"
+	"github.com/onnov/mcp/internal/pc/netproxy"
 	"github.com/onnov/mcp/internal/pc/sandbox"
 	"github.com/onnov/mcp/internal/pc/tools"
 	"github.com/onnov/mcp/internal/pc/workspace"
@@ -34,6 +35,16 @@ func Serve(ctx context.Context, cfg config.Config) error {
 		return e
 	}
 	defer instance.Close()
+	if cfg.Transport == "tunnel" {
+		restore, err := netproxy.Install(cfg.SOCKS5Proxy)
+		if err != nil {
+			return err
+		}
+		defer restore()
+		if cfg.SOCKS5Proxy != nil {
+			fmt.Fprintln(os.Stderr, "pc-mcp: SOCKS5 proxy enabled; tunnel DNS is resolved by the proxy")
+		}
+	}
 	engine := &sandbox.Engine{Cache: cfg.State + "/cache", Toolchains: cfg.Toolchains, AllowNetwork: cfg.Network, MaxSeconds: cfg.MaxSeconds, GHtoken: os.Getenv("PC_MCP_GH_TOKEN")}
 	engine.Configure(cfg.Root)
 	ws, e := workspace.New(cfg.Root, cfg.State, engine)

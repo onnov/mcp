@@ -15,6 +15,10 @@ OpenAI tunnel-client v0.0.15.
 - Official tunnel SDK + local mock control plane: initialization, a real PC file
   tool call/response, and preservation of hidden `_meta.approval_nonce` on a
   pending smoke command. No live OpenAI credentials used.
+- SOCKS5 fixture: unresolved destination names sent to the proxy, verified TLS,
+  anonymous/password authentication, explicit proxy overriding environment
+  bypass settings, no direct fallback when unavailable, invalid configuration
+  refusal, and official tunnel SDK initialization through the proxy.
 - Compiled binary stdio check: 16 tools, explicit selection, revision-bearing
   file read/write, persistence, traversal refusal, embedded UI/CSP, sandbox
   setup refusal and SIGTERM shutdown with exit code 0.

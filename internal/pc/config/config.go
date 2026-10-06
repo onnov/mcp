@@ -5,9 +5,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/onnov/mcp/internal/pc/netproxy"
 )
 
 type Config struct {
@@ -15,6 +18,7 @@ type Config struct {
 	Toolchains                                             []string
 	Network                                                bool
 	MaxSeconds                                             int
+	SOCKS5Proxy                                            *url.URL
 }
 
 func Parse(args []string) (Config, error) {
@@ -34,6 +38,11 @@ func Parse(args []string) (Config, error) {
 	if fs.NArg() != 0 {
 		return c, errors.New("unexpected positional arguments")
 	}
+	proxy, proxyErr := netproxy.Parse(os.Getenv("PC_MCP_SOCKS5_PROXY"))
+	if proxyErr != nil {
+		return c, proxyErr
+	}
+	c.SOCKS5Proxy = proxy
 	if c.Root == "" {
 		return c, errors.New("--root or PC_MCP_ROOT is required")
 	}
