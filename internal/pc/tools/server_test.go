@@ -101,9 +101,14 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	if r := call("pc_open_workspace_picker", map[string]any{"path": "../outside"}); !r.IsError {
 		t.Fatal("picker escaped the allowed root")
 	}
-	resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: ui.PickerURI})
-	if e != nil || len(resource.Contents) != 1 || resource.Contents[0].MIMEType != ui.MIMEType || !strings.Contains(resource.Contents[0].Text, `id="breadcrumbs"`) {
-		t.Fatal("directory picker resource unavailable", e)
+	for _, uri := range []string{ui.PickerURI, ui.LegacyPickerURI} {
+		resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+		if e != nil {
+			t.Fatal("directory picker resource unavailable", uri, e)
+		}
+		if len(resource.Contents) != 1 || resource.Contents[0].URI != uri || resource.Contents[0].MIMEType != ui.MIMEType || resource.Contents[0].Text != ui.Picker || !strings.Contains(resource.Contents[0].Text, `id="breadcrumbs"`) {
+			t.Fatal("cached or current picker URI did not return the latest interactive UI", uri)
+		}
 	}
 	r := call("pc_write_file", map[string]any{"directory": ".", "branch": "", "path": "a.txt", "text": "one", "expected_revision": "new"})
 	if r.IsError {

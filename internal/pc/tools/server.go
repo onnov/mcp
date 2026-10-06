@@ -185,9 +185,9 @@ func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Serve
 	mcp.AddTool(s, descriptor("pc_list_jobs", "List bounded job history without console logs; jobs survive chats, not a server restart.", true), func(_ context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, map[string]any, error) {
 		return nil, map[string]any{"jobs": jm.List()}, nil
 	})
-	for _, r := range []struct{ uri, name, html string }{{ui.PickerURI, "workspace-picker", ui.Picker}, {ui.ApprovalURI, "command-confirmation", ui.Approval}} {
+	for _, r := range []struct{ uri, name, html string }{{ui.PickerURI, "workspace-picker", ui.Picker}, {ui.LegacyPickerURI, "workspace-picker-legacy", ui.Picker}, {ui.ApprovalURI, "command-confirmation", ui.Approval}} {
 		meta := mcp.Meta{"ui": map[string]any{"prefersBorder": true, "csp": map[string]any{"connectDomains": []string{}, "resourceDomains": []string{}}}, "openai/ui": map[string]any{"availableDisplayModes": []string{"inline", "fullscreen"}}}
-		if r.uri == ui.PickerURI {
+		if r.uri == ui.PickerURI || r.uri == ui.LegacyPickerURI {
 			meta["openai/widgetDescription"] = "Interactive PC workspace browser: open nested folders, use clickable ancestor breadcrumbs, filter names, select a directory and its current/existing/new Git branch. The last confirmed workspace is remembered. Let the user make their selection in this card."
 		}
 		s.AddResource(&mcp.Resource{URI: r.uri, Name: r.name, MIMEType: ui.MIMEType, Meta: meta}, func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {

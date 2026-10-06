@@ -44,6 +44,12 @@ OpenAI tunnel-client v0.0.15.
   ancestors, symlink exclusion and confirmed non-Git selection. Browsing alone
   does not change the saved workspace. `make check build-pc` passed; resource
   version increased to v2. Live ChatGPT rendering still requires verification.
+- Cached picker descriptors remain supported: both workspace-v1 and
+  workspace-v2 resources return the current HTML with the matching requested
+  URI and MCP Apps MIME type. MCP resource-read tests cover both addresses;
+  old no-argument calls remain valid. A live connected PC tool returned the new
+  browser_path field while its installed descriptor still had the old empty
+  input schema, confirming a server/connection metadata version mismatch.
 - HTTP/SSH env validation: no public listener, no anonymous HTTP mode, SSH key
   outside the workspace, sandbox cache (including symlink aliases) and SDK
   mounts. OpenAI Tunnel and stdio remain supported.
