@@ -115,21 +115,33 @@ func Run(args []string) error {
 	s := &http.Server{Addr: c.Addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 95 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if e := s.Shutdown(shutdown); e != nil {
-			log.Printf("shutdown: %v", e)
-		}
-	}()
 	mode := "anonymous, public read-only"
 	if c.OAuthEnabled() {
 		mode = "GitHub OAuth, user repositories and development tools"
 	}
 	log.Printf("GitHub MCP listening on http://%s/mcp (%s); GOMAXPROCS=%d", c.Addr, mode, c.GOMAXPROCS)
-	if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	return serve(ctx, s, s.ListenAndServe)
+}
+
+// ListenAndServe returns as soon as Shutdown closes the listener. Wait for
+// Shutdown itself too, otherwise main would exit before active requests finish.
+func serve(ctx context.Context, s *http.Server, listen func() error) error {
+	shutdownDone := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		defer close(shutdownDone)
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if e := s.Shutdown(shutdown); e != nil {
+			log.Printf("shutdown: %v", e)
+			_ = s.Close()
+		}
+	}()
+	if err := listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+	if ctx.Err() != nil {
+		<-shutdownDone
 	}
 	return nil
 }
