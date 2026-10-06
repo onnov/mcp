@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GitHub — репозиторий и ветка</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#17202a;--muted:#65758b;--line:#dce3ea;--accent:#2563eb;--hover:#f0f5ff}
+@media(prefers-color-scheme:dark){:root{--bg:#202327;--fg:#f0f3f6;--muted:#abb6c4;--line:#40464e;--hover:#293449}}
+*{box-sizing:border-box}body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}h1{font-size:16px;margin:0}button,input{font:inherit;color:inherit}
+.controls{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:12px}.field{position:relative;min-width:0}label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+button{cursor:pointer;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:9px 11px}button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:disabled{opacity:.5;cursor:default}
+.toggle{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;text-align:left}.label{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.popover{margin-top:6px;border:1px solid var(--line);border-radius:10px;padding:8px}
+[hidden]{display:none!important}input{width:100%;padding:9px;border:1px solid var(--line);border-radius:7px;background:var(--bg)}.results{max-height:240px;overflow:auto;margin-top:7px}.option{display:block;width:100%;border:0;border-radius:6px;text-align:left;padding:9px;white-space:normal}.option:hover,.option[aria-selected=true]{background:var(--hover)}.option small{display:block;color:var(--muted);margin-top:3px}.more{width:100%;margin-top:6px}.status{margin-top:12px;color:var(--muted);min-height:20px}.error{color:#d13d45}.badge{font-size:11px;color:var(--muted);white-space:nowrap}.empty{padding:10px;color:var(--muted)}
+@media(max-width:500px){.controls{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><h1>GitHub</h1><button id="refresh" aria-label="Обновить выбор и списки">Обновить</button></header>
+<div class="controls">
+ <section class="field"><label for="repo-toggle">Репозиторий</label><button class="toggle" id="repo-toggle" aria-expanded="false" aria-controls="repo-popover"><span class="label" id="repo-label">Выбрать репозиторий</span><span aria-hidden="true">▾</span></button>
+ <div class="popover" id="repo-popover" hidden><input id="repo-search" type="search" placeholder="Поиск по имени и описанию…" aria-label="Поиск репозиториев"><div class="results" id="repo-results" role="listbox" aria-label="Репозитории"></div><button class="more" id="repo-more" hidden>Загрузить ещё</button></div></section>
+ <section class="field"><label for="branch-toggle">Ветка</label><button class="toggle" id="branch-toggle" disabled aria-expanded="false" aria-controls="branch-popover"><span class="label" id="branch-label">main</span><span aria-hidden="true">▾</span></button>
+ <div class="popover" id="branch-popover" hidden><input id="branch-search" type="search" placeholder="Поиск ветки…" aria-label="Поиск веток"><div class="results" id="branch-results" role="listbox" aria-label="Ветки"></div><button class="more" id="branch-more" hidden>Загрузить ещё</button></div></section>
+</div>
+<div class="status" id="status" role="status" aria-live="polite">Загрузка сохранённого выбора…</div>
+<script>
+(() => {
+ 'use strict';
+ const $ = id => document.getElementById(id);
+ const state = {selection:null, repos:[], branches:[], repoNext:-1, branchNext:-1, repoEpoch:0, branchEpoch:0, selectionBusy:false, restoreEpoch:0, repoLoading:false, branchLoading:false};
+ const pending = new Map(); let serial=0, initialized=false, initialResult=null;
+ const notify=(method,params)=>window.parent.postMessage({jsonrpc:'2.0',method,params},'*');
+ function rpc(method,params){
+  const id=++serial;
+  return new Promise((resolve,reject)=>{
+   const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Нет ответа от ChatGPT. Откройте карточку заново.'));},60000);
+   pending.set(id,{resolve,reject,timer});window.parent.postMessage({jsonrpc:'2.0',id,method,params},'*');
+  });
+ }
+ async function tool(name,args={}){
+  const result=await rpc('tools/call',{name,arguments:args});
+  if(result?.isError)throw new Error((result.content||[]).filter(x=>x.type==='text').map(x=>x.text).join('\n')||'Ошибка инструмента');
+  if(result?.structuredContent)return result.structuredContent;
+  const text=(result?.content||[]).find(x=>x.type==='text')?.text;
+  if(text){try{return JSON.parse(text)}catch{throw new Error(text)}}
+  throw new Error('Сервер не вернул данные');
+ }
+ function status(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error);resize()}
+ let lastHeight=0;
+ function resize(){const height=Math.ceil(document.documentElement.getBoundingClientRect().height);if(height!==lastHeight){lastHeight=height;notify('ui/notifications/size-changed',{height})}}
+ function toggled(kind,open){$(kind+'-popover').hidden=!open;$(kind+'-toggle').setAttribute('aria-expanded',String(open));if(open)$(kind+'-search').focus();resize()}
+ function busy(value){state.selectionBusy=value;$('repo-toggle').disabled=value;$('branch-toggle').disabled=value||!state.selection;$('refresh').disabled=value}
+ function updateLabels(){const s=state.selection;$('repo-label').textContent=s?s.owner+'/'+s.repo:'Выбрать репозиторий';$('branch-label').textContent=s?s.branch:'main';$('branch-toggle').disabled=!s||state.selectionBusy}
+ async function publish(){
+  if(!state.selection)return;
+  const s=state.selection;
+  // Explicit context is scoped to this app instance/chat. Credentials stay server-side.
+  await rpc('ui/update-model-context',{content:[{type:'text',text:'Selected GitHub repository: '+s.owner+'/'+s.repo+'; branch: '+s.branch+'. Use these explicit owner/repo/branch values for operations.'}],structuredContent:{githubSelection:s}});
+ }
+ function render(kind){
+  const box=$(kind+'-results');box.replaceChildren();box.setAttribute('aria-busy',String(state[kind+'Loading']));
+  const rows=kind==='repo'?state.repos:state.branches;
+  const selected=kind==='repo'?(state.selection?.owner+'/'+state.selection?.repo):state.selection?.branch;
+  if(!rows.length){const p=document.createElement('div');p.className='empty';p.textContent='Совпадений на просмотренных страницах нет';box.append(p)}
+  for(const item of rows){
+   const b=document.createElement('button');b.className='option';b.type='button';b.setAttribute('role','option');
+   const name=kind==='repo'?item.full_name:item.name;b.setAttribute('aria-selected',String(name===selected));b.textContent=name;
+   if(kind==='repo'){const hint=document.createElement('small');hint.textContent=(item.private?'Закрытый':'Открытый')+' · '+(item.permissions?.push?'Запись и чтение':'Чтение');b.append(hint)}
+   else if(item.protected){const hint=document.createElement('small');hint.textContent='Защищённая ветка';b.append(hint)}
+   b.disabled=state[kind+'Loading']||state.selectionBusy;b.onclick=()=>choose(kind,item).catch(e=>status(e.message,true));box.append(b);
+  }
+  $(kind+'-more').hidden=(kind==='repo'?state.repoNext:state.branchNext)===-1;resize();
+ }
+ async function load(kind,append=false){
+  const isRepo=kind==='repo';if(!isRepo&&!state.selection)return;
+  const epoch=++state[kind+'Epoch'],selection=state.selection?{...state.selection}:null;
+  const page=append?(isRepo?state.repoNext:state.branchNext):1;if(page===-1)return;
+  const query=$(kind+'-search').value.trim();
+  state[kind+'Loading']=true;$(kind+'-more').disabled=true;render(kind);
+  try{
+   const result=await tool(isRepo?'list_repositories':'list_branches',isRepo?{query,page,limit:50}:{owner:selection.owner,repo:selection.repo,query,page,limit:50});
+   if(epoch!==state[kind+'Epoch'])return;
+   const key=isRepo?'repos':'branches',rows=isRepo?result.repositories:result.branches;
+   const items=append?state[key].concat(rows||[]):(rows||[]);
+   const unique=new Map(items.map(x=>[isRepo?x.full_name:x.name,x]));state[key]=[...unique.values()];
+   state[isRepo?'repoNext':'branchNext']=result.next_page??-1;render(kind);
+  }finally{if(epoch===state[kind+'Epoch']){state[kind+'Loading']=false;$(kind+'-more').disabled=false;render(kind)}}
+ }
+ async function choose(kind,item){
+  if(state.selectionBusy||state[kind+'Loading'])return;state.restoreEpoch++;busy(true);status('Сохраняю выбор…');
+  try{
+   const prev=state.selection;
+   const args=kind==='repo'?{owner:item.owner?.login||item.full_name.split('/')[0],repo:item.name||item.full_name.split('/')[1]}:{owner:prev.owner,repo:prev.repo,branch:item.name};
+   const result=await tool('select_repository',args);
+   if(!result.available)throw new Error(result.message||'Выбор недоступен');
+   state.selection=result.selection;state.branchEpoch++;state.branches=[];state.branchNext=-1;
+   $('branch-search').value='';updateLabels();toggled(kind,false);
+   status('Выбор сохранён для следующих чатов.');
+   try{await publish()}catch{status('Выбор сохранён. Контекст чата не обновился — укажите репозиторий в сообщении.',true)}
+   await load('branch');render('repo');
+  }finally{busy(false);render('repo');render('branch')}
+ }
+ async function restore(result){
+  const epoch=++state.restoreEpoch;let data=result;
+  if(!data){
+   const selection=await tool('get_selection');
+   const repositories=await tool('list_repositories',{page:1,limit:50});
+   const branches=selection.available?await tool('list_branches',{owner:selection.selection.owner,repo:selection.selection.repo,page:1,limit:50}):{branches:[],next_page:-1};
+   data={...selection,repositories,branches};
+  }
+  if(epoch!==state.restoreEpoch)return;
+  state.repoEpoch++;state.branchEpoch++;state.repoLoading=false;state.branchLoading=false;
+  state.selection=data.available?data.selection:null;
+  state.repos=data.repositories?.repositories||[];state.repoNext=data.repositories?.next_page??-1;
+  state.branches=data.branches?.branches||[];state.branchNext=data.branches?.next_page??-1;
+  updateLabels();render('repo');render('branch');
+  status(state.selection?'Восстановлен последний выбор: '+state.selection.owner+'/'+state.selection.repo+' · '+state.selection.branch+(data.message?' · '+data.message:''):data.message||'Выберите репозиторий.');
+  if(state.selection){try{await publish()}catch{status('Выбор восстановлен. Для работы укажите репозиторий в сообщении.',true)}}
+ }
+ window.addEventListener('message',event=>{
+  if(event.source!==window.parent||!event.data||event.data.jsonrpc!=='2.0')return;
+  const msg=event.data;
+  if(msg.id!==undefined&&pending.has(msg.id)){const p=pending.get(msg.id);pending.delete(msg.id);clearTimeout(p.timer);msg.error?p.reject(new Error(msg.error.message||'Ошибка ChatGPT')):p.resolve(msg.result);return}
+  if(msg.method==='ui/notifications/tool-result'&&msg.params?.structuredContent){
+   initialResult=msg.params.structuredContent;
+   if(initialized&&!state.selectionBusy)restore(initialResult).catch(e=>status(e.message,true));
+  }
+ });
+ for(const kind of ['repo','branch']){
+  $(kind+'-toggle').onclick=()=>{const open=$(kind+'-popover').hidden;toggled(kind,open);toggled(kind==='repo'?'branch':'repo',false);if(open)load(kind).catch(e=>status(e.message,true))};
+  let timer;$(kind+'-search').oninput=()=>{clearTimeout(timer);state[kind+'Epoch']++;state[kind+'Loading']=true;render(kind);timer=setTimeout(()=>load(kind).catch(e=>status(e.message,true)),250)};
+  $(kind+'-more').onclick=()=>load(kind,true).catch(e=>status(e.message,true));
+  $(kind+'-popover').onkeydown=event=>{
+   if(event.key==='Escape'){event.preventDefault();toggled(kind,false);$(kind+'-toggle').focus();return}
+   if(!['ArrowDown','ArrowUp','Home','End'].includes(event.key))return;
+   const options=[...$(kind+'-results').querySelectorAll('button:not(:disabled)')];if(!options.length)return;
+   const current=options.indexOf(document.activeElement);let next;
+   if(event.key==='Home')next=0;else if(event.key==='End')next=options.length-1;else if(event.key==='ArrowDown')next=(current+1)%options.length;else next=current<0?options.length-1:(current-1+options.length)%options.length;
+   event.preventDefault();options[next].focus();
+  }
+ }
+ $('refresh').onclick=async()=>{if(state.selectionBusy)return;busy(true);state.repoEpoch++;state.branchEpoch++;$('repo-search').value='';$('branch-search').value='';try{await restore()}catch(e){status(e.message,true)}finally{busy(false)}};
+ async function start(){
+  await rpc('ui/initialize',{appInfo:{name:'ghf-repository-picker',version:'1.0.0'},appCapabilities:{},protocolVersion:'2026-01-26'});
+  notify('ui/notifications/initialized',{});initialized=true;await restore(initialResult);
+ }
+ start().catch(e=>status(e.message,true));
+ if(window.ResizeObserver)new ResizeObserver(resize).observe(document.body);
+})();
+</script>
+</body></html>

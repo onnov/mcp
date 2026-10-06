@@ -1,4 +1,4 @@
-module mcp
+module github.com/onnov/mcp
 
 go 1.26.2
 
