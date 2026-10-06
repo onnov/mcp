@@ -19,7 +19,7 @@ func Valid(path string) error {
 		return errors.New("use a relative path inside the workspace")
 	}
 	for _, part := range strings.FieldsFunc(filepath.ToSlash(path), func(r rune) bool { return r == '/' }) {
-		if part == ".git" {
+		if strings.EqualFold(part, ".git") {
 			return errors.New(".git metadata is not exposed by file tools")
 		}
 	}
@@ -74,7 +74,7 @@ func List(root *os.Root, path string, offset, limit int, query string) (Page, er
 	})
 	matches := []Entry{}
 	for _, r := range rows {
-		if r.Name() == ".git" || !strings.Contains(strings.ToLower(r.Name()), strings.ToLower(query)) {
+		if strings.EqualFold(r.Name(), ".git") || !strings.Contains(strings.ToLower(r.Name()), strings.ToLower(query)) {
 			continue
 		}
 		matches = append(matches, Entry{r.Name(), filepath.ToSlash(filepath.Join(path, r.Name())), r.IsDir(), r.Type()&os.ModeSymlink != 0})
@@ -181,7 +181,20 @@ func Write(root *os.Root, path, text, expected string) (File, error) {
 			e = closeErr
 		}
 		if e == nil {
-			e = root.Rename(name, path)
+			if expected == "new" {
+				// Hard-link publication is atomic and never replaces a concurrently created file.
+				e = root.Link(name, path)
+				_ = root.Remove(name)
+			} else {
+				current, checkErr := Read(root, path)
+				if checkErr != nil {
+					e = checkErr
+				} else if current.Revision != expected {
+					e = errors.New("revision conflict; read the file again")
+				} else {
+					e = root.Rename(name, path)
+				}
+			}
 		}
 		if e != nil {
 			_ = root.Remove(name)

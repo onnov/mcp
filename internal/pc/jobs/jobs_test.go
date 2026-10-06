@@ -39,7 +39,7 @@ func TestApprovalNonceAndCancellation(t *testing.T) {
 	defer ws.Close()
 	m := New(context.Background(), ws, r, 10)
 	defer m.Close()
-	q := Request{Target: workspace.Target{Directory: "."}, Args: []string{"example"}, Purpose: "run", Seconds: 10}
+	q := Request{Target: workspace.Target{Directory: "."}, Args: []string{"example"}, Purpose: "run", Network: true, Seconds: 10}
 	v, nonce, e := m.Prepare(q)
 	if e != nil || v.Status != "awaiting_approval" || nonce == "" {
 		t.Fatal(v, nonce, e)
@@ -61,8 +61,8 @@ func TestApprovalNonceAndCancellation(t *testing.T) {
 	if _, e = m.Start(context.Background(), v.ID, nonce); e == nil {
 		t.Fatal("nonce replay accepted")
 	}
-	if _, e = ws.Write(context.Background(), q.Target, "file", "x", "new"); e == nil {
-		t.Fatal("job did not hold write lease")
+	if _, e = ws.Write(context.Background(), q.Target, "file", "x", "new"); e != nil {
+		t.Fatal("running development command blocked live edit", e)
 	}
 	m.Cancel(v.ID)
 	deadline := time.Now().Add(time.Second)

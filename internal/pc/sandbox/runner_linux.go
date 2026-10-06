@@ -4,8 +4,11 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/onnov/mcp/internal/pc/egress"
 	"io"
 	"os"
 	"os/exec"
@@ -58,13 +61,51 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 		return err
 	}
 	defer dir.Close()
-	if err = os.MkdirAll(e.Cache, 0700); err != nil {
+	// Only this project's cache is writable; siblings and control-plane state are absent.
+	key := sha256.Sum256([]byte(s.Root.Name()))
+	cache := filepath.Join(e.Cache, hex.EncodeToString(key[:]))
+	if err = os.MkdirAll(cache, 0700); err != nil {
 		return err
 	}
+	cacheRoot, err := os.OpenRoot(cache)
+	if err != nil {
+		return err
+	}
+	defer cacheRoot.Close()
+	cacheFD, err := cacheRoot.Open(".")
+	if err != nil {
+		return err
+	}
+	defer cacheFD.Close()
+	ctx, cancelCause := context.WithCancelCause(ctx)
+	defer cancelCause(nil)
+	go e.guardDisk(ctx, cancelCause, s.Root.Name(), cache)
+	var group *resourceGroup
+	if e.RequireResources {
+		group, err = e.newResourceGroup()
+		if err != nil {
+			return err
+		}
+		defer group.close()
+	}
+	var proxy *egress.Proxy
+	if s.Network && !s.HostNetwork {
+		proxy, err = egress.New(ctx, e.State, e.AllowPrivateNetwork, func() string {
+			if s.Credential {
+				return e.GHtoken
+			}
+			return ""
+		}())
+		if err != nil {
+			return err
+		}
+		defer proxy.Close()
+	}
 	a := []string{"--die-with-parent", "--new-session", "--unshare-all", "--cap-drop", "ALL", "--clearenv"}
-	if s.Network {
+	if s.HostNetwork {
 		a = append(a, "--share-net")
 	}
+
 	for _, p := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64"} {
 		if _, err := os.Stat(p); err == nil {
 			a = append(a, "--ro-bind", p, p)
@@ -73,8 +114,12 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 	for _, p := range e.Toolchains {
 		a = append(a, "--ro-bind", p, p)
 	}
-	a = append(a, "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/home", "--dir", "/home/pc", "--dir", "/etc")
-	for _, p := range []string{"/etc/ssl", "/etc/alternatives", "/etc/ld.so.cache", "/etc/localtime"} {
+	a = append(a, "--proc", "/proc", "--dev", "/dev")
+	if e.TmpMaxBytes > 0 {
+		a = append(a, "--size", strconv.FormatInt(e.TmpMaxBytes, 10))
+	}
+	a = append(a, "--tmpfs", "/tmp", "--dir", "/home", "--dir", "/home/pc", "--dir", "/etc")
+	for _, p := range []string{"/etc/ssl/certs", "/etc/ssl/openssl.cnf", "/etc/alternatives", "/etc/ld.so.cache", "/etc/localtime"} {
 		if _, err := os.Stat(p); err == nil {
 			a = append(a, "--ro-bind", p, p)
 		}
@@ -87,22 +132,34 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 		}
 	}
 	// Complete sandbox directory creation before binding untrusted project content.
-	a = append(a, "--dir", "/workspace", "--dir", "/cache", "--bind", e.Cache, "/cache", "--bind", "/proc/self/fd/3", "/workspace")
+	a = append(a, "--dir", "/workspace", "--dir", "/cache", "--bind", "/proc/self/fd/4", "/cache", "--bind", "/proc/self/fd/3", "/workspace")
 	path := "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"
 	for _, p := range e.Toolchains {
 		path = filepath.Join(p, "bin") + ":" + path
 	}
-	vars := map[string]string{"PATH": path, "HOME": "/home/pc", "TMPDIR": "/tmp", "LANG": "C.UTF-8", "GOCACHE": "/cache/go-build", "GOMODCACHE": "/cache/go-mod", "GOPATH": "/cache/go", "GOTOOLCHAIN": "local", "GOMAXPROCS": "2", "GOTELEMETRY": "off", "XDG_CACHE_HOME": "/cache", "PIP_CACHE_DIR": "/cache/pip", "npm_config_cache": "/cache/npm", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0", "GH_CONFIG_DIR": "/home/pc/.config/gh", "GH_PROMPT_DISABLED": "1"}
+	vars := map[string]string{"PATH": path, "HOME": "/home/pc", "TMPDIR": "/tmp", "LANG": "C.UTF-8", "GOCACHE": "/cache/go-build", "GOMODCACHE": "/cache/go-mod", "GOPATH": "/cache/go", "GOTOOLCHAIN": "local", "GOTELEMETRY": "off", "XDG_CACHE_HOME": "/cache", "PIP_CACHE_DIR": "/cache/pip", "npm_config_cache": "/cache/npm", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0", "GH_CONFIG_DIR": "/home/pc/.config/gh", "GH_PROMPT_DISABLED": "1"}
+	if s.Network && !s.HostNetwork {
+		a = append(a, "--ro-bind", proxy.Directory, "/run/pc-mcp", "--ro-bind", e.HelperPath, "/pc-mcp-helper")
+		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
+			vars[key] = "http://127.0.0.1:3128"
+		}
+		vars["NO_PROXY"] = ""
+		vars["no_proxy"] = ""
+	}
 	if s.Credential {
 		if e.GHtoken == "" {
-			return errors.New("PC_MCP_GH_TOKEN is not configured; host gh login/SSH credentials are intentionally not mounted")
+			return errors.New("PC_MCP_GH_TOKEN is not configured")
 		}
-		vars["GH_TOKEN"] = e.GHtoken
-		if len(s.Args) == 0 || (s.Args[0] != "gh" && s.Args[0] != "git") {
+		if s.Args[0] != "git" && s.Args[0] != "gh" {
 			return errors.New("credential jobs must invoke git or gh directly")
 		}
-		// gh restricts credential delivery by GitHub host; no plaintext token in
-		// command argv, .gitconfig or a model-readable file. Disable project hooks.
+		// Placeholder satisfies CLI login checks; the real token is added by the
+		// host proxy only for verified github.com/api.github.com HTTPS requests.
+		vars["GH_TOKEN"] = "pc-mcp-proxy-placeholder"
+		vars["GH_HOST"] = "github.com"
+		for _, key := range []string{"SSL_CERT_FILE", "GIT_SSL_CAINFO", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "npm_config_cafile"} {
+			vars[key] = "/run/pc-mcp/ca.pem"
+		}
 		vars["GIT_CONFIG_COUNT"] = "4"
 		vars["GIT_CONFIG_KEY_0"] = "credential.helper"
 		vars["GIT_CONFIG_VALUE_0"] = ""
@@ -113,6 +170,7 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 		vars["GIT_CONFIG_KEY_3"] = "core.fsmonitor"
 		vars["GIT_CONFIG_VALUE_3"] = "false"
 	}
+
 	for k, v := range vars {
 		a = append(a, "--setenv", k, v)
 	}
@@ -120,19 +178,53 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 	// bwrap deliberately passes inherited FDs to the payload. Close the pinned
 	// HOST directory FD before any untrusted command can fchdir through it.
 	// This constant shell wrapper does not evaluate user arguments.
-	a = append(a, "/bin/sh", "-c", `exec 3<&-; exec "$@"`, "pc-mcp")
-	// CPU deadline plus file-descriptor limit, in addition to wall-clock cancellation.
+	wrapper := `exec 3<&-; exec 4<&-; exec "$@"`
+	if s.Network && !s.HostNetwork {
+		wrapper = `exec 3<&-; exec 4<&-; /pc-mcp-helper --job-proxy /run/pc-mcp/net.sock & n=0; while ! test -f /tmp/pc-mcp-proxy-ready; do n=$((n+1)); if test "$n" -ge 100; then echo 'network helper did not start' >&2; exit 125; fi; sleep 0.05; done; exec "$@"`
+	}
+	a = append(a, "/bin/sh", "-c", wrapper, "pc-mcp")
+	// Bound open FDs and single-file writes; CPU remains unrestricted.
 	if _, err := os.Stat("/usr/bin/prlimit"); err == nil {
-		a = append(a, "/usr/bin/prlimit", "--nofile=1024:1024", "--cpu="+strconv.Itoa(s.Seconds+1)+":"+strconv.Itoa(s.Seconds+1), "--")
+		limits := syscall.Rlimit{}
+		if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limits); err != nil {
+			return err
+		}
+		nofile := min(uint64(4096), limits.Max)
+		a = append(a, "/usr/bin/prlimit", "--nofile="+strconv.FormatUint(nofile, 10)+":"+strconv.FormatUint(nofile, 10))
+		{
+			free, _, err := diskAvailable(cache)
+			if err != nil {
+				return err
+			}
+			projectFree, _, err := diskAvailable(s.Root.Name())
+			if err != nil {
+				return err
+			}
+			size := min(free, projectFree) - e.diskReserve()
+			if size <= 0 {
+				return errors.New("insufficient disk space after reserve")
+			}
+			a = append(a, "--fsize="+strconv.FormatInt(size, 10)+":"+strconv.FormatInt(size, 10))
+		}
+		a = append(a, "--")
 	}
 	a = append(a, s.Args...)
 	cmd := exec.CommandContext(ctx, e.BwrapPath, a...)
-	cmd.ExtraFiles = []*os.File{dir}
+	cmd.ExtraFiles = []*os.File{dir, cacheFD}
 	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin"}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if group != nil {
+		cmd.SysProcAttr.UseCgroupFD = true
+		cmd.SysProcAttr.CgroupFD = int(group.fd.Fd())
+	}
 	cmd.Cancel = func() error {
+		if group != nil {
+			if err := group.kill(); err == nil {
+				return nil
+			}
+		}
 		if cmd.Process == nil {
 			return nil
 		}
@@ -145,7 +237,16 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 	cmd.WaitDelay = 2 * time.Second
 	err = cmd.Run()
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return context.Cause(ctx)
+	}
+	if group != nil && err != nil {
+		events, _ := os.ReadFile(filepath.Join(group.directory, "memory.events"))
+		for _, line := range strings.Split(string(events), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 && fields[0] == "oom_kill" && fields[1] != "0" {
+				return fmt.Errorf("job exceeded available memory budget (host reserve protected): %w", err)
+			}
+		}
 	}
 	return err
 }

@@ -3,6 +3,7 @@
 package ownerauth
 
 import (
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -10,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -22,6 +24,9 @@ const Scope = "pc"
 
 type Config struct {
 	PublicURL, ClientID, ClientSecret, RedirectURI, PasswordHash string
+	// AuthMode is password (default) or client-secret for a private, single-owner client.
+	AuthMode       string
+	TrustedProxies []netip.Prefix
 }
 
 func (c Config) Validate() error {
@@ -35,6 +40,12 @@ func (c Config) Validate() error {
 	}
 	if c.ClientID == "" || len(c.ClientID) > 128 || len(c.ClientSecret) < 32 || len(c.ClientSecret) > 4096 {
 		return errors.New("HTTP/SSH requires PC_MCP_OAUTH_CLIENT_ID and PC_MCP_OAUTH_CLIENT_SECRET (32+ characters)")
+	}
+	if c.AuthMode != "" && c.AuthMode != "password" && c.AuthMode != "client-secret" {
+		return errors.New("owner-auth must be password or client-secret")
+	}
+	if c.AuthMode == "client-secret" {
+		return nil // Confidential-client authentication remains mandatory at /oauth/token.
 	}
 	cost, err := bcrypt.Cost([]byte(c.PasswordHash))
 	if err != nil || cost < 10 || cost > 14 || len(c.PasswordHash) != 60 {
@@ -66,21 +77,28 @@ type access struct {
 }
 type Server struct {
 	Config
-	mu          sync.Mutex
-	pending     map[[32]byte]pending
-	codes       map[[32]byte]code
-	access      map[[32]byte]access
-	refresh     map[[32]byte]*grant
-	usedRefresh map[[32]byte]*grant
-	attempts    []time.Time
-	login       chan struct{}
+	mu             sync.Mutex
+	consumed       map[[32]byte]time.Time
+	envelope       cipher.AEAD
+	loginLimit     *Limiter
+	authorizeLimit *Limiter
+	anonymousLimit *Limiter
+	codes          map[[32]byte]code
+	access         map[[32]byte]access
+	refresh        map[[32]byte]*grant
+	usedRefresh    map[[32]byte]*grant
+	login          chan struct{}
 }
 
 func New(c Config) (*Server, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	return &Server{Config: c, pending: map[[32]byte]pending{}, codes: map[[32]byte]code{}, access: map[[32]byte]access{}, refresh: map[[32]byte]*grant{}, usedRefresh: map[[32]byte]*grant{}, login: make(chan struct{}, 1)}, nil
+	aead, err := newEnvelope()
+	if err != nil {
+		return nil, err
+	}
+	return &Server{Config: c, envelope: aead, consumed: map[[32]byte]time.Time{}, loginLimit: &Limiter{Max: 10, Period: time.Minute}, authorizeLimit: &Limiter{Max: 30, Period: time.Minute}, anonymousLimit: &Limiter{Max: 60, Period: time.Minute}, codes: map[[32]byte]code{}, access: map[[32]byte]access{}, refresh: map[[32]byte]*grant{}, usedRefresh: map[[32]byte]*grant{}, login: make(chan struct{}, 2)}, nil
 }
 func hash(s string) [32]byte { return sha256.Sum256([]byte(s)) }
 func same(a, b string) bool {
@@ -110,9 +128,9 @@ func oauthError(w http.ResponseWriter, status int, message string) {
 func (s *Server) resource() string { return s.PublicURL + "/mcp" }
 func (s *Server) prune() {
 	now := time.Now()
-	for k, p := range s.pending {
-		if !now.Before(p.Expires) {
-			delete(s.pending, k)
+	for k, expiry := range s.consumed {
+		if !now.Before(expiry) {
+			delete(s.consumed, k)
 		}
 	}
 	for k, c := range s.codes {
@@ -172,11 +190,17 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 		ok := false
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
 			s.mu.Lock()
-			s.prune()
-			_, ok = s.access[hash(parts[1])]
+			a, exists := s.access[hash(parts[1])]
+			now := time.Now()
+			ok = exists && now.Before(a.Expires) && now.Before(a.Grant.Expires)
 			s.mu.Unlock()
 		}
 		if !ok {
+			if !s.anonymousLimit.Allow(ClientIP(r, s.TrustedProxies)) {
+				w.Header().Set("Retry-After", "60")
+				oauthError(w, 429, "temporarily_unavailable")
+				return
+			}
 			w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+s.PublicURL+`/.well-known/oauth-protected-resource", scope="pc"`)
 			oauthError(w, 401, "invalid_token")
 			return

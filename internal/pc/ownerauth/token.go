@@ -66,6 +66,16 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	case "authorization_code":
 		verifier := f.Get("code_verifier")
 		c, exists := s.codes[hash(f.Get("code"))]
+		if s.AuthMode == "client-secret" {
+			var err error
+			c, err = s.openClientCode(f.Get("code"))
+			_, used := s.consumed[hash(f.Get("code"))]
+			exists = err == nil && !used
+			if exists && len(s.consumed) >= 1024 {
+				oauthError(w, 429, "temporarily_unavailable")
+				return
+			}
+		}
 		if !exists || !verifierPattern.MatchString(verifier) || !same(c.Challenge, challenge(verifier)) || f.Get("redirect_uri") != s.RedirectURI {
 			oauthError(w, 400, "invalid_grant")
 			return
@@ -98,6 +108,10 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		s.usedRefresh[consumed] = g
 		s.removeGrant(g) // Atomic rotation, including the previous access token.
 	} else {
+		if s.AuthMode == "client-secret" {
+			c, _ := s.openClientCode(f.Get("code"))
+			s.consumed[consumed] = c.Expires
+		}
 		delete(s.codes, consumed)
 	}
 	a, refresh := random(), random()

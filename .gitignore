@@ -13,3 +13,32 @@
 
 /pc-mcp
 /.pc-mcp.env
+/start_pc_mcp.sh
+/paswd_hash.md
+
+# Local PC configuration and secrets (examples stay tracked)
+/.pc-mcp*.env
+/.pc-mcp*.env.*
+!/.pc-mcp*.env.example
+/server.env
+/server.env.*
+**/.env
+**/.env.*
+!**/.env.example
+/*.key
+/*.pem
+/id_rsa
+/id_ed25519
+/known_hosts
+
+# Generated binaries and test/profiling output
+/pc-job-proxy
+/pc-job-proxy.exe
+/pc-mcp.exe
+/github_public_mcp.exe
+*.test
+*.prof
+*.pprof
+*.log
+coverage*.out
+node_modules/

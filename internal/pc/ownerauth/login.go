@@ -21,16 +21,27 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
-	nonce, cookie := random(), random()
-	s.mu.Lock()
-	s.prune()
-	if len(s.pending) >= 100 {
-		s.mu.Unlock()
+	if !s.authorizeLimit.Allow(ClientIP(r, s.TrustedProxies)) {
+		w.Header().Set("Retry-After", "60")
 		oauthError(w, 429, "temporarily_unavailable")
 		return
 	}
-	s.pending[hash(nonce)] = pending{State: q.Get("state"), Challenge: q.Get("code_challenge"), Cookie: hash(cookie), Expires: time.Now().Add(10 * time.Minute)}
-	s.mu.Unlock()
+	if s.AuthMode == "client-secret" {
+		c, err := s.sealClientCode(code{Challenge: q.Get("code_challenge"), Expires: time.Now().Add(time.Minute)})
+		if err != nil {
+			oauthError(w, 500, "server_error")
+			return
+		}
+		s.redirect(w, r, q.Get("state"), c, "")
+		return
+	}
+	cookie := random()
+	nonce, err := s.seal(pending{State: q.Get("state"), Challenge: q.Get("code_challenge"), Cookie: hash(cookie), Expires: time.Now().Add(10 * time.Minute)})
+	if err != nil {
+		oauthError(w, 500, "server_error")
+		return
+	}
+
 	http.SetCookie(w, &http.Cookie{Name: "__Host-pc-mcp-login", Value: cookie, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 600})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -47,6 +58,10 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ownerLogin(w http.ResponseWriter, r *http.Request) {
+	if s.AuthMode == "client-secret" {
+		oauthError(w, 404, "invalid_request")
+		return
+	}
 	if r.Method != http.MethodPost {
 		oauthError(w, 405, "invalid_request")
 		return
@@ -66,17 +81,22 @@ func (s *Server) ownerLogin(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
-	key := hash(r.PostForm.Get("request"))
-	s.mu.Lock()
-	s.prune()
-	p, ok := s.pending[key]
-	if !ok || hash(cookie.Value) != p.Cookie {
-		s.mu.Unlock()
+	raw := r.PostForm.Get("request")
+	key := hash(raw)
+	p, err := s.openEnvelope(raw)
+	if err != nil || hash(cookie.Value) != p.Cookie {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
-	delete(s.pending, key) // Even failed/cancelled attempts consume the browser flow.
+	s.mu.Lock()
+	s.prune()
+	_, used := s.consumed[key]
 	s.mu.Unlock()
+	if used {
+		oauthError(w, 400, "invalid_request")
+		return
+	}
+
 	http.SetCookie(w, &http.Cookie{Name: "__Host-pc-mcp-login", Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	if r.PostForm.Get("action") == "deny" {
 		s.redirect(w, r, p.State, "", "access_denied")
@@ -87,7 +107,7 @@ func (s *Server) ownerLogin(w http.ResponseWriter, r *http.Request) {
 		s.redirect(w, r, p.State, "", "access_denied")
 		return
 	}
-	if !s.allowAttempt() {
+	if !s.loginLimit.Allow(ClientIP(r, s.TrustedProxies)) {
 		w.Header().Set("Retry-After", "60")
 		oauthError(w, 429, "temporarily_unavailable")
 		return
@@ -106,33 +126,23 @@ func (s *Server) ownerLogin(w http.ResponseWriter, r *http.Request) {
 	c := random()
 	s.mu.Lock()
 	s.prune()
-	if len(s.codes) >= 100 {
+	// Consume successful flows atomically; unauthenticated requests create no state.
+	if _, used := s.consumed[key]; used {
+		s.mu.Unlock()
+		oauthError(w, 400, "invalid_request")
+		return
+	}
+	if len(s.codes) >= 100 || len(s.consumed) >= 1024 {
 		s.mu.Unlock()
 		oauthError(w, 429, "temporarily_unavailable")
 		return
 	}
+	s.consumed[key] = p.Expires
 	s.codes[hash(c)] = code{Challenge: p.Challenge, Expires: time.Now().Add(time.Minute)}
 	s.mu.Unlock()
 	s.redirect(w, r, p.State, c, "")
 }
 
-func (s *Server) allowAttempt() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now()
-	kept := s.attempts[:0]
-	for _, t := range s.attempts {
-		if now.Sub(t) < time.Minute {
-			kept = append(kept, t)
-		}
-	}
-	s.attempts = kept
-	if len(s.attempts) >= 10 {
-		return false
-	}
-	s.attempts = append(s.attempts, now)
-	return true
-}
 func (s *Server) redirect(w http.ResponseWriter, r *http.Request, state, code, failure string) {
 	u, _ := url.Parse(s.RedirectURI)
 	q := u.Query()
