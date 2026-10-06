@@ -1,9 +1,12 @@
 .idea
 
-/github_public_mcp
 /github-mcp
 /data/
 /.env
 /.env.*
 !/.env.example
 /coverage.out
+
+/github_public_mcp
+/github_public_mcp_01
+/github_public_mcp_02
