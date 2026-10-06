@@ -21,6 +21,9 @@ import (
 )
 
 func Run(args []string) error {
+	if len(args) == 1 && args[0] == "--hash-password" {
+		return hashPassword()
+	}
 	cfg, e := config.Parse(args)
 	if e != nil {
 		return e
@@ -54,7 +57,10 @@ func Serve(ctx context.Context, cfg config.Config) error {
 	defer ws.Close()
 	jm := jobs.New(ctx, ws, engine, cfg.MaxSeconds)
 	defer jm.Close()
-	server := tools.New(ws, jm)
+	server := tools.New(ws, jm, tools.Options{OAuth: cfg.Transport == "http" || cfg.Transport == "ssh"})
+	if cfg.Transport == "http" || cfg.Transport == "ssh" {
+		return serveHTTP(ctx, cfg, server)
+	}
 	if cfg.Transport == "stdio" {
 		err := server.Run(ctx, &mcp.StdioTransport{})
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {

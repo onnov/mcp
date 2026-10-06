@@ -1,9 +1,15 @@
 # PC MCP: локальная среда разработки
 
+**Выбор подключения:** прежний OpenAI Tunnel — инструкция ниже.
+HTTPS через встроенный обратный SSH-проброс, без GitHub для входа —
+[короткая настройка PC_SSH_SETUP.md](PC_SSH_SETUP.md).
+Режим задаётся через `PC_MCP_TRANSPORT=tunnel|ssh|http|stdio`;
+по умолчанию остаётся `tunnel`.
+
 `cmd/pc-mcp` — второй, независимый MCP-сервер в этом репозитории.
 Он запускается на вашем ПК. MCP и официальный **Go SDK OpenAI Secure MCP
 Tunnel** работают внутри одного процесса, через in-memory MCP transport.
-Отдельный tunnel-client, VPS, Apache, домен и входящие порты не нужны.
+В режиме OpenAI Tunnel отдельный tunnel-client, VPS, Apache, домен и входящие порты не нужны.
 GitHub MCP `cmd/github-mcp` продолжает работать отдельно.
 
 ## Сборка и зависимости

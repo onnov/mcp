@@ -126,6 +126,32 @@ func TestProxyRejectsTunnelSocketBypass(t *testing.T) {
 	}
 }
 
+func TestSOCKSDialContextSendsSSHHostname(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "through proxy") }))
+	defer backend.Close()
+	u, _ := url.Parse(backend.URL)
+	proxy, targets := socksFixture(t, u.Host, false)
+	dial, err := DialContext(proxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := dial(ctx, "tcp", "ssh-server.invalid:22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	select {
+	case target := <-targets:
+		if target != "ssh-server.invalid:22" {
+			t.Fatal("SSH destination was resolved locally", target)
+		}
+	default:
+		t.Fatal("SSH dial bypassed SOCKS5")
+	}
+}
+
 func TestOfficialTunnelUsesSOCKSForControlPlane(t *testing.T) {
 	t.Setenv("NO_PROXY", "*")
 	cp := mocktunnelservice.NewMockTunnelService(

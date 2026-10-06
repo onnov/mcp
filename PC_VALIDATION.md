@@ -19,6 +19,23 @@ OpenAI tunnel-client v0.0.15.
   anonymous/password authentication, explicit proxy overriding environment
   bypass settings, no direct fallback when unavailable, invalid configuration
   refusal, and official tunnel SDK initialization through the proxy.
+- Embedded Go SSH server fixture: authenticated reverse TCP forwarding of an
+  HTTP request, automatic reconnection, cancellation/port closure, mismatched
+  host-key refusal and private-key permission checks. SSH destination DNS sent
+  through SOCKS5 in the outbound dialer test.
+- Single-owner OAuth without GitHub: consent/cookie/origin checks, PKCE, exact
+  resource and callback, code replay/concurrent consumption refusal, access
+  expiration, atomic refresh rotation with family revocation on replay,
+  revocation, client_secret_basic/post and bounded password attempts.
+- Real HTTP MCP SDK client: unauthenticated access denied, owner password login,
+  16 OAuth-tagged tools, file edit in the confined workspace, revocation and
+  public Host/Origin checks with reverse-proxy-compatible SDK settings.
+- HTTP/SSH env validation: no public listener, no anonymous HTTP mode, SSH key
+  outside the workspace, sandbox cache (including symlink aliases) and SDK
+  mounts. OpenAI Tunnel and stdio remain supported.
+- Compiled binary: interactive-helper stdin hashing, env-only authenticated
+  HTTP startup, unauthenticated MCP challenge, no OpenAI runtime in HTTP mode,
+  and SIGTERM exit 0. Cross builds include the SSH/OAuth additions.
 - Compiled binary stdio check: 16 tools, explicit selection, revision-bearing
   file read/write, persistence, traversal refusal, embedded UI/CSP, sandbox
   setup refusal and SIGTERM shutdown with exit code 0.
@@ -57,3 +74,8 @@ ChatGPT iframe. Live tunnel availability, organization/workspace associations,
 permissions and private widget metadata delivery must be checked in the user's
 workspace using [PC_SETUP.md](PC_SETUP.md). No real PC was connected or exposed
 by this development session.
+
+SSH forwarding was tested against a local Go SSH server, not the owner's SSH
+hosting or Apache. That host must allow remote forwarding and enforce loopback
+binds (`GatewayPorts no`). The new password OAuth flow has not been linked in
+the owner's ChatGPT workspace; use [PC_SSH_SETUP.md](PC_SSH_SETUP.md).

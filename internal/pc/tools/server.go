@@ -61,7 +61,7 @@ type ApproveInput struct {
 	ApprovalNonce string `json:"approval_nonce"`
 }
 
-func descriptor(name, description string, read bool) *mcp.Tool {
+func baseDescriptor(name, description string, read bool) *mcp.Tool {
 	return &mcp.Tool{Name: name, Description: description, Meta: mcp.Meta{"securitySchemes": []map[string]any{{"type": "noauth"}}, "ui": map[string]any{"visibility": []string{"model", "app"}}}, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: read, DestructiveHint: boolptr(!read), OpenWorldHint: boolptr(false)}}
 }
 func boolptr(b bool) *bool { return &b }
@@ -70,7 +70,18 @@ func uiTool(t *mcp.Tool, uri string) {
 	t.Meta["openai/outputTemplate"] = uri
 	t.Meta["openai/widgetAccessible"] = true
 }
-func New(ws *workspace.Service, jm *jobs.Manager) *mcp.Server {
+
+type Options struct{ OAuth bool }
+
+func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Server {
+	oauth := len(options) > 0 && options[0].OAuth
+	descriptor := func(name, description string, read bool) *mcp.Tool {
+		t := baseDescriptor(name, description, read)
+		if oauth {
+			t.Meta["securitySchemes"] = []map[string]any{{"type": "oauth2", "scopes": []string{"pc"}}}
+		}
+		return t
+	}
 	s := mcp.NewServer(&mcp.Implementation{Name: "pc-mcp", Title: "PC development workspace", Version: "1.0.0"}, &mcp.ServerOptions{Instructions: instructions, Capabilities: &mcp.ServerCapabilities{Extensions: map[string]any{"io.modelcontextprotocol/ui": map[string]any{}}}})
 	picker := descriptor("pc_open_workspace_picker", "Open project directory and branch picker, restoring the last selected directory. Invoke when user asks to choose or open the PC workspace.", true)
 	uiTool(picker, ui.PickerURI)
