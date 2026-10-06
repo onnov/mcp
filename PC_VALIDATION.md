@@ -30,6 +30,12 @@ OpenAI tunnel-client v0.0.15.
 - Real HTTP MCP SDK client: unauthenticated access denied, owner password login,
   16 OAuth-tagged tools, file edit in the confined workspace, revocation and
   public Host/Origin checks with reverse-proxy-compatible SDK settings.
+- OAuth login regression: the page overrides the outer `no-referrer` policy
+  with `same-origin` so HTML form submissions retain their Origin; its CSP
+  allows the configured ChatGPT callback. Missing, opaque (`null`) and foreign
+  origins remain refused. The new regression assertions failed before the fix;
+  affected-package race tests, vet and the PC binary build passed after it.
+  These are HTTP/header tests, not a real browser or live ChatGPT login.
 - HTTP/SSH env validation: no public listener, no anonymous HTTP mode, SSH key
   outside the workspace, sandbox cache (including symlink aliases) and SDK
   mounts. OpenAI Tunnel and stdio remain supported.

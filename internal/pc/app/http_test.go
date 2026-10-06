@@ -90,7 +90,29 @@ func TestPCAuthenticatedHTTPWithoutGitHub(t *testing.T) {
 	if len(nonce) != 2 || response.StatusCode != 200 {
 		t.Fatal("owner login unavailable", string(body))
 	}
+	// The outer middleware's no-referrer default must be overridden for this
+	// document: a browser otherwise sends Origin: null on its HTML form POST.
+	if response.Header.Get("Referrer-Policy") != "same-origin" {
+		t.Fatal("outer HTTP handler broke the browser login Origin")
+	}
+	if !strings.Contains(response.Header.Get("Content-Security-Policy"), "form-action 'self' "+cfg.OAuth.RedirectURI+";") {
+		t.Fatal("browser login CSP blocks the return to ChatGPT")
+	}
 	login := url.Values{"request": {nonce[1]}, "password": {password}, "action": {"allow"}}
+	for _, origin := range []string{"null", "", "https://evil.example"} {
+		r, _ := http.NewRequestWithContext(ctx, "POST", srv.URL+"/oauth/login", strings.NewReader(login.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Origin", origin)
+		r.AddCookie(response.Cookies()[0])
+		denied, err := client.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		denied.Body.Close()
+		if denied.StatusCode != 403 {
+			t.Fatal("unsafe login origin accepted through HTTP middleware", origin)
+		}
+	}
 	r, _ := http.NewRequestWithContext(ctx, "POST", srv.URL+"/oauth/login", strings.NewReader(login.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Origin", cfg.OAuth.PublicURL)

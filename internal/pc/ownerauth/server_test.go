@@ -63,6 +63,12 @@ func begin(t *testing.T, s *Server, h http.Handler) (string, *http.Cookie) {
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
+	if w.Header().Get("Referrer-Policy") != "same-origin" {
+		t.Fatal("login page must preserve the same-origin form POST Origin")
+	}
+	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "form-action 'self' "+s.RedirectURI+";") {
+		t.Fatal("login CSP must allow the configured OAuth callback")
+	}
 	m := regexp.MustCompile(`name="request" value="([^"]+)"`).FindStringSubmatch(w.Body.String())
 	if len(m) != 2 {
 		t.Fatal("missing CSRF nonce")
@@ -147,8 +153,10 @@ func TestLoginCSRFPasswordAndExpiry(t *testing.T) {
 	s, h := testServer(t)
 	nonce, cookie := begin(t, s, h)
 	f := url.Values{"request": {nonce}, "password": {testPassword}, "action": {"allow"}}
-	if w := request(h, "POST", "/oauth/login", f, map[string]string{"Origin": "https://evil.example"}, cookie); w.Code != 403 {
-		t.Fatal("cross-origin login accepted")
+	for _, origin := range []string{"https://evil.example", "null", ""} {
+		if w := request(h, "POST", "/oauth/login", f, map[string]string{"Origin": origin}, cookie); w.Code != 403 {
+			t.Fatal("unsafe login origin accepted", origin)
+		}
 	}
 	if w := request(h, "POST", "/oauth/login", f, map[string]string{"Origin": s.PublicURL}); w.Code != 400 {
 		t.Fatal("login without cookie accepted")

@@ -34,7 +34,15 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "__Host-pc-mcp-login", Value: cookie, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 600})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	// HTML form POSTs inherit the document's referrer policy. no-referrer
+	// would make their Origin opaque ("null"), failing our CSRF checks before
+	// password verification. same-origin preserves it for /oauth/login while
+	// withholding the authorization URL from the cross-origin callback.
+	w.Header().Set("Referrer-Policy", "same-origin")
+	// Browsers may apply form-action to the redirect after a form submission
+	// too. Allow the validated, operator-configured ChatGPT callback as well
+	// as the local form target, rather than allowing all external destinations.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' "+s.RedirectURI+"; frame-ancestors 'none'; base-uri 'none'")
 	_ = loginPage.Execute(w, nonce)
 }
 
