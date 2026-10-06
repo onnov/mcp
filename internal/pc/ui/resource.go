@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const PickerURI = "ui://pc-mcp/workspace-v1.html"
+const PickerURI = "ui://pc-mcp/workspace-v2.html"
 const ApprovalURI = "ui://pc-mcp/approve-v1.html"
 const MIMEType = "text/html;profile=mcp-app"
 

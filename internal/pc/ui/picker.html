@@ -1,21 +1,121 @@
-<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PC — проект и ветка</title>
-<style>:root{color-scheme:light dark}body{font:14px system-ui;margin:0;padding:16px}h1{font-size:17px}button,input,select{font:inherit;padding:8px;border-radius:6px;border:1px solid #8888;background:transparent;color:inherit}button{cursor:pointer}button:disabled{opacity:.5;cursor:default}input,select{width:100%;box-sizing:border-box}label{display:block;margin:12px 0 6px}nav{display:flex;gap:8px;align-items:center;overflow-wrap:anywhere}#rows{max-height:230px;overflow:auto;margin:8px 0}#rows button{display:block;width:100%;text-align:left;border:0}#rows button:hover{background:#8882}#message{margin:12px 0;white-space:pre-wrap}#saved{padding:10px;background:#8881;border-radius:8px}small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus-visible{outline:2px solid #4587ff}</style>
-<h1>Рабочий каталог ПК</h1><div id="saved">Загрузка последнего выбора…</div><label for="search">Каталоги в открытой папке</label><nav><button id="root">Корень</button><button id="up">↑</button><span id="location">.</span></nav><input id="search" type="search" placeholder="Фильтр имён в этой папке"><div id="rows"></div><button id="more" hidden>Ещё</button><button id="candidate">Выбрать эту папку</button>
-<div id="branch-panel" hidden><label for="branch-search">Ветка</label><input id="branch-search" type="search" placeholder="Поиск локальных веток"><select id="branch" aria-label="Ветка"></select><input id="new-branch" hidden placeholder="Имя новой ветки"><small id="hint"></small><p><button id="apply">Подтвердить каталог и ветку</button></p></div><div id="message" role="status" aria-live="polite"></div>
-<script>/*BRIDGE*/</script><script>
-(async()=>{'use strict';const $=id=>document.getElementById(id);let folder='.',candidate=null,next=-1,epoch=0,rows=[],selection=null,busy=false,initial=null;
- const status=(t,error=false)=>{$('message').textContent=t;$('message').classList.toggle('error',error);PC.resize()};
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PC — проект и ветка</title>
+<style>
+:root{color-scheme:light dark}body{font:14px system-ui;margin:0;padding:16px}h1{font-size:17px}
+button,input,select{font:inherit;padding:8px;border-radius:6px;border:1px solid #8888;background:transparent;color:inherit}
+button{cursor:pointer}button:disabled{opacity:.5;cursor:default}input,select{width:100%;box-sizing:border-box}
+label{display:block;margin:12px 0 6px}nav{display:flex;gap:8px;align-items:center;flex-wrap:wrap;overflow-wrap:anywhere}
+#breadcrumbs{display:flex;gap:4px;align-items:center;flex-wrap:wrap}#location{margin:8px 0;overflow-wrap:anywhere}
+#rows{max-height:280px;overflow:auto;margin:8px 0}#rows button{display:block;width:100%;text-align:left;border:0}
+#rows button:hover{background:#8882}#message{margin:12px 0;white-space:pre-wrap}#saved{padding:10px;background:#8881;border-radius:8px}
+small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus-visible{outline:2px solid #4587ff}
+</style>
+<h1>Рабочий каталог ПК</h1>
+<div id="saved">Загрузка последнего выбора…</div>
+<p><small>Откройте папку кликом. Переходите на любую глубину; путь сверху позволяет вернуться к родительской папке.</small></p>
+<nav aria-label="Путь к каталогу"><button id="root">Корень</button><button id="up" aria-label="В родительский каталог">↑</button><span id="breadcrumbs"></span></nav>
+<div id="location"></div>
+<label for="search">Каталоги в открытой папке</label>
+<input id="search" type="search" placeholder="Фильтр имён в этой папке">
+<div id="rows" aria-label="Подкаталоги"></div>
+<button id="more" hidden>Ещё</button>
+<button id="candidate">Выбрать эту папку</button>
+<div id="branch-panel" hidden>
+  <label for="branch-search">Ветка</label>
+  <input id="branch-search" type="search" placeholder="Поиск локальных веток">
+  <select id="branch" aria-label="Ветка"></select>
+  <input id="new-branch" hidden placeholder="Имя новой ветки">
+  <small id="hint"></small>
+  <p><button id="apply">Подтвердить каталог и ветку</button></p>
+</div>
+<div id="message" role="status" aria-live="polite"></div>
+<script>/*BRIDGE*/</script>
+<script>
+(async()=>{
+ 'use strict';
+ const $=id=>document.getElementById(id);
+ let folder='.',candidate=null,next=-1,epoch=0,rows=[],busy=false,initial=null;
+ const status=(text,error=false)=>{$('message').textContent=text;$('message').classList.toggle('error',error);PC.resize()};
  const context=async(s)=>PC.context({pcWorkspace:{directory:s.directory,branch:s.branch}},'PC workspace: directory='+s.directory+'; branch='+(s.branch||'(no Git)')+'. Use these explicit values for every operation.');
- const lock=v=>{busy=v;for(const id of ['root','up','candidate','apply','more'])$(id).disabled=v};
- function render(){const box=$('rows');box.replaceChildren();for(const r of rows.filter(r=>r.directory&&!r.symlink)){const b=document.createElement('button');b.textContent='📁 '+r.name;b.disabled=busy;b.onclick=()=>{if(!busy)navigate(r.path)};box.append(b)}if(!box.childNodes.length){const p=document.createElement('small');p.textContent='Подкаталогов нет. Можно выбрать открытую папку.';box.append(p)}$('location').textContent=folder;$('up').disabled=busy||folder==='.';$('more').hidden=next<0;PC.resize()}
- async function load(append=false){const token=++epoch;const path=folder,offset=append?next:0;lock(true);try{const data=await PC.tool('pc_list_directory',{path,offset,limit:100,query:$('search').value});if(token!==epoch)return;rows=append?rows.concat(data.entries):data.entries;next=data.next_offset;render()}catch(e){if(token===epoch)status(e.message,true)}finally{if(token===epoch){lock(false);render()}}}
- function navigate(p){if(busy)return;folder=p;candidate=null;$('branch-panel').hidden=true;$('search').value='';status('');load()}
- function branches(){const select=$('branch');select.replaceChildren();const names=(candidate?.branches||[]).filter(x=>x.toLowerCase().includes($('branch-search').value.toLowerCase()));if(candidate?.git&&!names.includes(candidate.branch))names.unshift(candidate.branch);for(const name of names){const o=document.createElement('option');o.value=name;o.textContent=name+(name===candidate.branch?' · текущая':'');select.append(o)}if(candidate?.git){const o=document.createElement('option');o.value='__pc_new__';o.textContent='+ Новая ветка';select.append(o);select.value=candidate.branch}else{const o=document.createElement('option');o.value='';o.textContent='Без Git';select.append(o)}$('new-branch').hidden=true;select.disabled=!candidate?.git}
- $('candidate').onclick=async()=>{lock(true);try{candidate=await PC.tool('pc_inspect_workspace',{directory:folder});$('branch-panel').hidden=false;$('branch-search').value='';branches();$('hint').textContent=candidate.dirty?'Есть незакоммиченные изменения. Для смены ветки сначала сохраните их.':candidate.git?(candidate.message||'Новая ветка создаётся от текущей ветки.'):'Файлы можно редактировать без Git.';status('Проверьте ветку перед началом работы.')}catch(e){status(e.message,true)}finally{lock(false)}};
- $('branch').onchange=()=>{$('new-branch').hidden=$('branch').value!=='__pc_new__';if(!$('new-branch').hidden)$('new-branch').focus();PC.resize()};$('branch-search').oninput=()=>{if(!busy)branches()};
- $('apply').onclick=async()=>{if(!candidate||busy)return;lock(true);try{const create=$('branch').value==='__pc_new__';const branch=create?$('new-branch').value.trim():$('branch').value;if(create&&!branch)throw Error('Введите имя новой ветки');const s=await PC.tool('pc_select_workspace',{directory:candidate.directory,branch,create,base_branch:candidate.branch||''});selection=s;candidate=s;$('saved').textContent='Выбрано: '+s.directory+' · '+(s.branch||'без Git');branches();await context(s);status('Выбор сохранён. Опишите задачу в чате.')}catch(e){status(e.message,true)}finally{lock(false)}};
- $('root').onclick=()=>navigate('.');$('up').onclick=()=>navigate(folder.includes('/')?folder.slice(0,folder.lastIndexOf('/')):'.');$('more').onclick=()=>load(true);let timer;$('search').oninput=()=>{epoch++;clearTimeout(timer);timer=setTimeout(()=>load(),250)};
- PC.onResult(r=>{if(r.structuredContent?.selection)initial=r.structuredContent});
- try{await PC.ready();const s=initial?.selection||await PC.tool('pc_get_workspace');selection=s;$('saved').textContent=s.remembered===false?'Выберите рабочий каталог.':'Последний каталог: '+s.directory+' · '+(s.branch||'без Git');if(s.message)status(s.message);if(s.available!==false&&s.remembered!==false)await context(s);folder=s.available===false?'.':s.directory||'.';await load()}catch(e){status(e.message,true);navigate('.')}
+ const lock=value=>{busy=value;for(const id of ['root','up','candidate','apply','more','branch','branch-search','new-branch'])$(id).disabled=value};
+ function render(){
+  const box=$('rows');box.replaceChildren();
+  for(const row of rows.filter(row=>row.directory&&!row.symlink)){
+   const button=document.createElement('button');button.textContent='📁 '+row.name;button.disabled=busy;
+   button.onclick=()=>{if(!busy)return navigate(row.path)};box.append(button);
+  }
+  if(!box.childNodes.length){const text=document.createElement('small');text.textContent=busy?'Загрузка каталогов…':'Подкаталогов нет. Можно выбрать открытую папку.';box.append(text)}
+  const crumbs=$('breadcrumbs');crumbs.replaceChildren();let path='';
+  for(const name of folder.split('/').filter(name=>name&&name!=='.')){
+   path=path?path+'/'+name:name;const target=path;
+   const separator=document.createElement('span');separator.textContent=' / ';crumbs.append(separator);
+   const button=document.createElement('button');button.textContent=name;button.disabled=busy||target===folder;
+   button.onclick=()=>navigate(target);crumbs.append(button);
+  }
+  $('location').textContent='Открыто: '+folder;$('candidate').textContent='Выбрать: '+folder;
+  $('up').disabled=busy||folder==='.';$('more').hidden=next<0;
+  $('branch').disabled=busy||!candidate?.git;PC.resize();
+ }
+ async function load(append=false){
+  const token=++epoch,path=folder,offset=append?next:0;lock(true);render();
+  try{
+   const data=await PC.tool('pc_list_directory',{path,offset,limit:100,query:$('search').value});
+   if(token!==epoch)return;
+   rows=append?rows.concat(data.entries):data.entries;next=data.next_offset;
+  }catch(error){if(token===epoch)status(error.message,true)}
+  finally{if(token===epoch){lock(false);render()}}
+ }
+ function navigate(path){
+  if(busy)return;folder=path;candidate=null;rows=[];next=-1;$('branch-panel').hidden=true;$('search').value='';status('');return load();
+ }
+ function branches(){
+  const select=$('branch');select.replaceChildren();
+  const names=(candidate?.branches||[]).filter(name=>name.toLowerCase().includes($('branch-search').value.toLowerCase()));
+  if(candidate?.git&&!names.includes(candidate.branch))names.unshift(candidate.branch);
+  for(const name of names){const option=document.createElement('option');option.value=name;option.textContent=name+(name===candidate.branch?' · текущая':'');select.append(option)}
+  if(candidate?.git){const option=document.createElement('option');option.value='__pc_new__';option.textContent='+ Новая ветка';select.append(option);select.value=candidate.branch}
+  else{const option=document.createElement('option');option.value='';option.textContent='Без Git';select.append(option)}
+  $('new-branch').hidden=true;select.disabled=!candidate?.git;
+ }
+ $('candidate').onclick=async()=>{
+  if(busy)return;lock(true);render();
+  try{
+   candidate=await PC.tool('pc_inspect_workspace',{directory:folder});$('branch-panel').hidden=false;$('branch-search').value='';branches();
+   $('hint').textContent=candidate.dirty?'Есть незакоммиченные изменения. Для смены ветки сначала сохраните их.':candidate.git?(candidate.message||'Новая ветка создаётся от текущей ветки.'):'Файлы можно редактировать без Git.';
+   status('Проверьте ветку перед началом работы.');
+  }catch(error){status(error.message,true)}finally{lock(false);render()}
+ };
+ $('branch').onchange=()=>{$('new-branch').hidden=$('branch').value!=='__pc_new__';if(!$('new-branch').hidden)$('new-branch').focus();PC.resize()};
+ $('branch-search').oninput=()=>{if(!busy)branches()};
+ $('apply').onclick=async()=>{
+  if(!candidate||busy)return;lock(true);render();
+  try{
+   const create=$('branch').value==='__pc_new__',branch=create?$('new-branch').value.trim():$('branch').value;
+   if(create&&!branch)throw Error('Введите имя новой ветки');
+   const selected=await PC.tool('pc_select_workspace',{directory:candidate.directory,branch,create,base_branch:candidate.branch||''});
+   candidate=selected;$('saved').textContent='Выбрано: '+selected.directory+' · '+(selected.branch||'без Git');branches();await context(selected);
+   status('Выбор сохранён. Опишите задачу в чате.');
+  }catch(error){status(error.message,true)}finally{lock(false);render()}
+ };
+ $('root').onclick=()=>navigate('.');
+ $('up').onclick=()=>navigate(folder.includes('/')?folder.slice(0,folder.lastIndexOf('/')):'.');
+ $('more').onclick=()=>{if(!busy)return load(true)};
+ let timer;
+ $('search').oninput=()=>{epoch++;clearTimeout(timer);lock(true);render();timer=setTimeout(()=>load(),250)};
+ PC.onResult(result=>{initial=result});
+ try{
+  await PC.ready();
+  const data=initial?.structuredContent;
+  const selected=data?.selection||await PC.tool('pc_get_workspace');
+  $('saved').textContent=selected.remembered===false?'Выберите рабочий каталог.':'Последний каталог: '+selected.directory+' · '+(selected.branch||'без Git');
+  if(selected.message)status(selected.message);
+  if(selected.available!==false&&selected.remembered!==false)await context(selected);
+  folder=initial?._meta?.pc_browser_path||data?.browser_path||(selected.available===false?'.':selected.directory||'.');
+  await load();
+ }catch(error){status(error.message,true);if(!busy)await navigate('.')}
 })();
-</script></html>
+</script>
+</html>

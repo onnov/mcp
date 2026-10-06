@@ -7,7 +7,7 @@ OpenAI tunnel-client v0.0.15.
 
 - `go test -race ./...` for both servers, including existing GitHub tests.
 - `go vet ./...`, `gofmt` and `git diff --check`.
-- All 10 dependency-free UI tests: existing GitHub picker plus PC picker,
+- All 12 dependency-free UI tests: existing GitHub picker plus PC picker,
   branch creation, restored non-Git context, consent and private nonce handling.
 - Native static Linux amd64 builds of both commands.
 - Cross compilation of `cmd/pc-mcp` for Linux arm64, macOS arm64 and Windows amd64.
@@ -36,6 +36,14 @@ OpenAI tunnel-client v0.0.15.
   origins remain refused. The new regression assertions failed before the fix;
   affected-package race tests, vet and the PC binary build passed after it.
   These are HTTP/header tests, not a real browser or live ChatGPT login.
+- Directory-browser regression: all three browsing tools advertise the same
+  registered MCP Apps resource. Listing/tree results carry the requested start
+  path for the UI without changing their existing data schemas. Picker restores
+  the saved folder or accepts an explicit start path, including eight levels of
+  nesting. UI tests cover listing/tree hydration, folder clicks, clickable
+  ancestors, symlink exclusion and confirmed non-Git selection. Browsing alone
+  does not change the saved workspace. `make check build-pc` passed; resource
+  version increased to v2. Live ChatGPT rendering still requires verification.
 - HTTP/SSH env validation: no public listener, no anonymous HTTP mode, SSH key
   outside the workspace, sandbox cache (including symlink aliases) and SDK
   mounts. OpenAI Tunnel and stdio remain supported.

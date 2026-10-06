@@ -9,3 +9,43 @@ test('approval never starts a job automatically and keeps nonce out of model con
 test('missing private metadata fails closed',async t=>{const h=harness(t,'approve.html',{structuredContent:{id:'job',request,status:'awaiting_approval'}},{});await until(()=>h.get('status').textContent.includes('приватные'));assert.equal(h.get('approve').disabled,true);assert.equal(h.tools('pc_approve_run').length,0)});
 test('picker restores directory without switching branch; new branch selection is explicit',async t=>{const s={directory:'project',branch:'feature',git:true,branches:['main','feature'],dirty:false};const h=harness(t,'picker.html',{structuredContent:{selection:s}},{pc_list_directory:()=>({entries:[],next_offset:-1}),pc_inspect_workspace:()=>s,pc_select_workspace:a=>({...s,branch:a.branch})});await until(()=>h.get('saved').textContent.includes('project'));await until(()=>h.tools('pc_list_directory').length===1);assert.equal(h.tools('pc_select_workspace').length,0);await h.get('candidate').onclick();h.get('branch').value='__pc_new__';h.get('branch').onchange();h.get('new-branch').value='new-feature';await h.get('apply').onclick();const q=h.tools('pc_select_workspace')[0].params.arguments;assert.equal(q.directory,'project');assert.equal(q.branch,'new-feature');assert.equal(q.create,true);assert.equal(q.base_branch,'feature');assert.match(h.get('saved').textContent,/new-feature/)});
 test('non-Git remembered directory is published to the new chat',async t=>{const s={available:true,directory:'plain',branch:'',git:false,branches:[]};const h=harness(t,'picker.html',{structuredContent:{selection:s}},{pc_list_directory:()=>({entries:[],next_offset:-1})});await until(()=>h.calls.some(c=>c.method==='ui/update-model-context'));const c=h.calls.find(c=>c.method==='ui/update-model-context');assert.equal(c.params.structuredContent.pcWorkspace.directory,'plain');assert.equal(c.params.structuredContent.pcWorkspace.branch,'')});
+
+test('directory listing opens a browser at the requested path and navigates beyond tree depth',async t=>{
+ const remembered={available:true,remembered:true,directory:'WB/old-project',branch:'feature',git:true,branches:['feature']};
+ let saved;
+ const h=harness(t,'picker.html',{structuredContent:{entries:[],next_offset:-1},_meta:{pc_browser_path:'AI'}},{
+  pc_get_workspace:()=>remembered,
+  pc_list_directory:a=>({entries:[{name:'child',path:a.path+'/child',directory:true,symlink:false},{name:'alias',path:a.path+'/alias',directory:true,symlink:true}],next_offset:-1}),
+  pc_inspect_workspace:a=>({available:true,directory:a.directory,branch:'',git:false,branches:[]}),
+  pc_select_workspace:a=>(saved={available:true,remembered:true,directory:a.directory,branch:'',git:false,branches:[]})
+ });
+ await until(()=>h.get('location').textContent==='Открыто: AI'&&!h.get('candidate').disabled);
+ assert.equal(h.tools('pc_list_directory')[0].params.arguments.path,'AI');
+ assert.equal(h.get('rows').children.length,1,'symlink aliases must not be selectable');
+ for(let i=0;i<8;i++)await h.get('rows').children[0].onclick();
+ const deep='AI'+('/child'.repeat(8));
+ assert.equal(h.get('location').textContent,'Открыто: '+deep);
+ assert.equal(h.tools('pc_select_workspace').length,0,'browsing must not change the saved selection');
+ const buttons=h.get('breadcrumbs').children.filter(x=>typeof x.onclick==='function');
+ assert.equal(buttons.length,9);
+ assert.equal(buttons.at(-1).disabled,true,'current folder is indicated in breadcrumbs');
+ await buttons[0].onclick();assert.equal(h.get('location').textContent,'Открыто: AI');
+ await h.get('rows').children[0].onclick();await h.get('candidate').onclick();
+ assert.equal(h.get('branch').disabled,true,'non-Git branch control remains disabled');
+ await h.get('apply').onclick();assert.equal(saved.directory,'AI/child');
+ assert.equal(saved.branch,'');
+ const updates=h.calls.filter(x=>x.method==='ui/update-model-context');
+ assert.equal(updates.at(-1).params.structuredContent.pcWorkspace.directory,'AI/child');
+});
+
+test('tree result and explicit picker path override the remembered browsing location',async t=>{
+ for(const initial of [
+  {structuredContent:{directories:[{path:'SAMOKAT',depth:0}],truncated:false},_meta:{pc_browser_path:'SAMOKAT'}},
+  {structuredContent:{selection:{available:true,remembered:true,directory:'WB/old',branch:'main'},browser_path:'SAMOKAT'}}
+ ]){
+  const h=harness(t,'picker.html',initial,{pc_get_workspace:()=>({available:true,remembered:true,directory:'WB/old',branch:'main'}),pc_list_directory:()=>({entries:[],next_offset:-1})});
+  await until(()=>h.tools('pc_list_directory').length===1);
+  assert.equal(h.tools('pc_list_directory')[0].params.arguments.path,'SAMOKAT');
+  assert.equal(h.tools('pc_select_workspace').length,0);
+ }
+});
