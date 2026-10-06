@@ -21,6 +21,8 @@ OpenAI tunnel-client v0.0.15.
 - Path/symlink confinement, stale file revisions, stale/dirty branches,
   non-Git projects, current-branch file work without command sandbox,
   nested-project checkout leases and single-instance state locking.
+- File paths from a non-Git parent/outer checkout cannot bypass the branch
+  boundary of a nested Git repository; symlink directory aliases cannot bypass it.
 - Asynchronous cancellation, one-use consent nonce, network consent policy,
   concurrent stdout/stderr, first/tail/cursor behavior, byte budgets, very long
   output without newline, chunk-boundary handling and credential redaction.

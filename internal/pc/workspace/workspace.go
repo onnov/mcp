@@ -75,8 +75,14 @@ func (s *Service) List(path string, offset, limit int, query string) (files.Page
 	return files.List(s.root, path, offset, limit, query)
 }
 func (s *Service) open(path string) (*os.Root, error) {
-	if e := files.Valid(path); e != nil {
+	if e := s.realDirectories(path, false); e != nil {
 		return nil, e
+	}
+	return s.root.OpenRoot(filepath.Clean(path))
+}
+func (s *Service) realDirectories(path string, allowMissing bool) error {
+	if e := files.Valid(path); e != nil {
+		return e
 	}
 	p := "."
 	for _, part := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
@@ -85,14 +91,44 @@ func (s *Service) open(path string) (*os.Root, error) {
 		}
 		p = filepath.Join(p, part)
 		st, e := s.root.Lstat(p)
+		if allowMissing && errors.Is(e, os.ErrNotExist) {
+			return nil
+		}
 		if e != nil {
-			return nil, e
+			return e
 		}
 		if st.Mode()&os.ModeSymlink != 0 {
-			return nil, errors.New("select actual directories, not symlink aliases")
+			return errors.New("use actual directories, not symlink aliases")
+		}
+		if !st.IsDir() {
+			return errors.New("path component is not a directory")
 		}
 	}
-	return s.root.OpenRoot(filepath.Clean(path))
+	return nil
+}
+
+// An explicit non-Git parent must not bypass the branch check of a nested
+// checkout. Directory aliases are rejected before locating the Git boundary.
+func (s *Service) checkFileTarget(t Target, path string) error {
+	if e := files.Valid(path); e != nil {
+		return e
+	}
+	parent := filepath.Join(t.Directory, filepath.Dir(path))
+	if e := s.realDirectories(parent, true); e != nil {
+		return e
+	}
+	outer, hasOuter, e := s.repo(t.Directory)
+	if e != nil {
+		return e
+	}
+	inner, hasInner, e := s.repo(parent)
+	if e != nil {
+		return e
+	}
+	if hasInner && (!hasOuter || filepath.Clean(inner) != filepath.Clean(outer)) {
+		return errors.New("file belongs to a nested Git checkout; use that checkout as directory and provide its current branch")
+	}
+	return nil
 }
 func (s *Service) repo(path string) (string, bool, error) {
 	p := filepath.Clean(path)
@@ -335,6 +371,9 @@ func (s *Service) Read(ctx context.Context, t Target, path string) (files.File, 
 		return files.File{}, e
 	}
 	defer r.Close()
+	if e = s.checkFileTarget(t, path); e != nil {
+		return files.File{}, e
+	}
 	return files.Read(r, path)
 }
 func (s *Service) Write(ctx context.Context, t Target, path, text, revision string) (files.File, error) {
@@ -348,6 +387,9 @@ func (s *Service) Write(ctx context.Context, t Target, path, text, revision stri
 		return files.File{}, e
 	}
 	defer r.Close()
+	if e = s.checkFileTarget(t, path); e != nil {
+		return files.File{}, e
+	}
 	return files.Write(r, path, text, revision)
 }
 func (s *Service) Remove(ctx context.Context, t Target, path, revision string) error {
@@ -361,6 +403,9 @@ func (s *Service) Remove(ctx context.Context, t Target, path, revision string) e
 		return e
 	}
 	defer r.Close()
+	if e = s.checkFileTarget(t, path); e != nil {
+		return e
+	}
 	return files.Remove(r, path, revision)
 }
 

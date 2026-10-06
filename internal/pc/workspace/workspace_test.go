@@ -153,3 +153,41 @@ func TestProjectSymlinkAliasRejected(t *testing.T) {
 		t.Fatal("symlink alias allowed writes")
 	}
 }
+func TestNestedFilePathCannotBypassBranch(t *testing.T) {
+	s := testService(t, true)
+	ctx := context.Background()
+	f, e := s.Read(ctx, Target{"project", "main"}, "file")
+	if e != nil {
+		t.Fatal(e)
+	}
+	// Root is not a Git checkout, but project is: explicit root/empty branch must
+	// not authorize a write to project/file, even with the correct file revision.
+	if _, e = s.Write(ctx, Target{".", ""}, "project/file", "bypass", f.Revision); e == nil {
+		t.Fatal("non-Git parent bypassed nested branch guard")
+	}
+	if _, e = s.Read(ctx, Target{".", ""}, "project/file"); e == nil {
+		t.Fatal("nested Git file read without explicit branch")
+	}
+	if e = s.Remove(ctx, Target{".", ""}, "project/file", f.Revision); e == nil {
+		t.Fatal("nested Git file removed without explicit branch")
+	}
+	os.Mkdir(filepath.Join(s.rootPath, "project", "inner"), 0700)
+	if _, e = s.git(ctx, "project/inner", "init", "-b", "other"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.Write(ctx, Target{"project", "main"}, "inner/file", "bypass", "new"); e == nil {
+		t.Fatal("outer Git branch bypassed nested checkout")
+	}
+	if _, e = s.Write(ctx, Target{"project/inner", "other"}, "file", "correct", "new"); e != nil {
+		t.Fatal(e)
+	}
+	os.Mkdir(filepath.Join(s.rootPath, "project", "subdir"), 0700)
+	os.Symlink("project/subdir", filepath.Join(s.rootPath, "alias-parent"))
+	if _, e = s.Write(ctx, Target{".", ""}, "alias-parent/file", "bypass", "new"); e == nil {
+		t.Fatal("symlink directory path bypassed branch guard")
+	}
+	original, e := s.Read(ctx, Target{"project", "main"}, "file")
+	if e != nil || original.Text != f.Text {
+		t.Fatal("original file changed", original, e)
+	}
+}
