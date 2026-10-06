@@ -119,7 +119,9 @@ func registerWorkspace(s *mcp.Server, d Services) {
 			if owner == "" {
 				owner = strings.Split(r.FullName, "/")[0]
 			}
-			branch := r.DefaultBranch
+			// Omit branch for other repositories so Select restores their own
+			// history, then main/default, exactly like the full picker.
+			branch := ""
 			if selection.Available && r.ID == selection.Selection.RepositoryID {
 				branch = selection.Selection.Branch
 			}
