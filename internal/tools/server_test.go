@@ -179,3 +179,32 @@ func TestStatelessTransportPreservesPerRequestIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestMentionRestoresHistoryInsteadOfForcingDefaultBranch(t *testing.T) {
+	d := fixtures(t, true)
+	ctx, session := connect(t, d)
+	if e := d.Workspace.Preferences.Set(42, preferences.Selection{Owner: "owner", Repo: "repo", Branch: "feature", RepositoryID: 10}); e != nil {
+		t.Fatal(e)
+	}
+	if e := d.Workspace.Preferences.Set(42, preferences.Selection{Owner: "other", Repo: "last", Branch: "main", RepositoryID: 20}); e != nil {
+		t.Fatal(e)
+	}
+	r, e := session.CallTool(ctx, &mcp.CallToolParams{Name: "search_repository_mentions", Arguments: map[string]any{"query": ""}})
+	if e != nil || r.IsError {
+		t.Fatalf("search: %v %+v", e, r)
+	}
+	data, _ := json.Marshal(r.StructuredContent)
+	var mentions Mentions
+	if e := json.Unmarshal(data, &mentions); e != nil {
+		t.Fatal(e)
+	}
+	if len(mentions.Items) != 1 || strings.Contains(mentions.Items[0].URI, "branch=") {
+		t.Fatalf("mention forced a branch instead of restoring history: %s", data)
+	}
+	if _, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: mentions.Items[0].URI}); e != nil {
+		t.Fatal(e)
+	}
+	if v, _ := d.Workspace.Preferences.Get(42); v.Branch != "feature" {
+		t.Fatalf("branch history lost through composer mention: %+v", v)
+	}
+}
