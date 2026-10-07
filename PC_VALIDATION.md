@@ -1,5 +1,21 @@
 # PC MCP validation — 2026-10-06
 
+## 2026-10-07: фактическая регрессия approval output
+
+На реальной карточке 1.1.4 подтверждены `succeeded/exit_code=0`, но внутри UI:
+`Не удалось загрузить вывод: Unknown tool`. Server output содержит 3 records/82 bytes.
+Карточка публикует прежний context `via pc_job_output`, тогда как исходники и
+встроенные ресурсы 1.1.4 уже содержат статусный records path. Это старый HTML
+и прежний каталог подключения; детали и пределы доказательства:
+[PC_OUTPUT_REGRESSION.md](PC_OUTPUT_REGRESSION.md).
+
+Подготовлена версия 1.1.5/schema 5, approval-v8/workspace-v5.
+Два новых диагностических теста падали до изменения URI/bridge и прошли после.
+`make check-pc` и `git diff --check` прошли: Go race tests, 26 UI tests, vet, gofmt.
+Успешный harness не является подтверждением исправления в реальной ChatGPT
+карточке. Host restart, обновление metadata подключения и новая визуальная
+проверка остаются обязательными перед push/PR.
+
 ## Проверка текущей ветки
 
 Ветка `mcp/pc-ssh-proxy` проверена на текущем PC MCP после загрузки Go-зависимостей.
@@ -13,7 +29,7 @@
 - `stdio` smoke: собранный сервер отвечает на MCP `initialize` по newline-delimited JSON и согласует protocol version `2025-11-25`.
 - Owner auth: `password` и `client-secret`/PKCE сценарии проходят.
 - Resource modes: `strict` fail-closed и `auto` fallback/warning проходят unit/integration tests.
-- UI подтверждения: после разрешения запуска действия немедленно блокируются/скрываются, показывается явное состояние запуска; затем отображаются running/terminal status, exit code, duration и подробный retained console output из `pc_job_output`.
+- UI подтверждения в harness: после разрешения запуска действия немедленно блокируются; затем отображаются running/terminal status, exit code, duration и вывод из `pc_job_status.output.records`. Реальная карточка со старым HTML показала `Unknown tool`; deploy gate описан выше.
 - `.gitignore`: локальные env/secrets, SSH key/known_hosts, launcher, password/hash file, IDE metadata, binaries, logs, profiles и coverage output игнорируются; tracked/untracked secret-pattern scan не выявил реальных секретов.
 - `git diff --check` проходит.
 
@@ -35,7 +51,7 @@ make test-pc-resources
 
 После клика «Разрешить запуск» кнопка подтверждения немедленно исчезает, а stop-кнопки появляются только после получения running/queued state. Повторный запуск из той же карточки невозможен.
 
-Для консоли карточка больше не полагается на компактный `pc_job_status`, который намеренно хранит только head/tail при длинном выводе. Она постранично читает `pc_job_output`, показывает sequence number, stdout/stderr, exit code, время выполнения, число записей/байт и сообщает об eviction retained-лога.
+Для консоли `pc_job_status` теперь самодостаточен: `output.records` постранично передаёт retained output, `records_cursor/more` продолжают чтение после terminal state, а `evicted` сообщает о потерянных записях. Карточка показывает sequence number, stdout/stderr, exit code, время выполнения и число записей/байт. `pc_job_output` остаётся необязательным отдельным API; отсутствие этого tool больше не ломает отображение результата. Для старых серверов сохраняется fallback на compact `head/tail`.
 
 ## Рекомендуемая host-side проверка перед deployment
 
