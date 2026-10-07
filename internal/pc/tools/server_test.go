@@ -48,8 +48,8 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(list.Tools) != 16 {
-		t.Fatalf("expected 16 tools, got %d", len(list.Tools))
+	if len(list.Tools) != 18 {
+		t.Fatalf("expected 18 tools, got %d", len(list.Tools))
 	}
 	call := func(name string, args any) *mcp.CallToolResult {
 		t.Helper()
@@ -119,11 +119,11 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	if !json.Valid(b) {
 		t.Fatal("no structured content")
 	}
-	r = call("pc_start_job", map[string]any{"directory": ".", "branch": "", "args": []string{"echo", "run"}, "purpose": "run", "seconds": 1})
+	r = call("pc_start_job", map[string]any{"directory": ".", "branch": "", "args": []string{"echo", "run"}, "purpose": "run", "network": true, "seconds": 1})
 	if !r.IsError {
 		t.Fatal("run bypassed confirmation card")
 	}
-	r = call("pc_request_run", map[string]any{"directory": ".", "branch": "", "args": []string{"echo", "run"}, "purpose": "run", "seconds": 1})
+	r = call("pc_request_run", map[string]any{"directory": ".", "branch": "", "args": []string{"echo", "run"}, "purpose": "run", "network": true, "seconds": 1})
 	if r.IsError {
 		t.Fatal(r.Content)
 	}

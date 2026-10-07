@@ -1,5 +1,6 @@
 // Package workspace coordinates selection, branch transitions and filesystem
-// mutations. A running command owns the write lease until every child exits.
+// mutations. Commands share a checkout execution lease; branch transitions
+// remain locked until every child exits. Live file edits support watch servers.
 package workspace
 
 import (
@@ -36,13 +37,17 @@ type persisted struct {
 	Root      string `json:"root"`
 	Selection Target `json:"selection"`
 }
+type executionLease struct {
+	count     int
+	exclusive bool
+}
 type Service struct {
 	mu              sync.Mutex
 	root            *os.Root
 	rootPath, state string
 	runner          sandbox.Runner
 	selected        Target
-	busy            bool
+	busy            map[string]executionLease
 	remembered      bool
 }
 
@@ -51,7 +56,7 @@ func New(rootPath, state string, runner sandbox.Runner) (*Service, error) {
 	if e != nil {
 		return nil, e
 	}
-	s := &Service{root: r, rootPath: rootPath, state: filepath.Join(state, "selection.json"), runner: runner, selected: Target{Directory: "."}}
+	s := &Service{root: r, rootPath: rootPath, state: filepath.Join(state, "selection.json"), runner: runner, selected: Target{Directory: "."}, busy: map[string]executionLease{}}
 	b, e := os.ReadFile(s.state)
 	if e == nil {
 		var p persisted
@@ -212,6 +217,9 @@ func (s *Service) inspect(ctx context.Context, path string) (Info, error) {
 	}
 	out.Git = ok
 	out.GitRoot = filepath.ToSlash(repo)
+	if ok && filepath.Clean(path) != filepath.Clean(repo) {
+		out.Message = "Commands can modify the entire checkout: " + out.GitRoot
+	}
 	if !ok {
 		out.Available = true
 		return out, nil
@@ -222,6 +230,10 @@ func (s *Service) inspect(ctx context.Context, path string) (Info, error) {
 	}
 	out.Available = true
 	out.Branches = []string{out.Branch}
+	if s.conflict(path) {
+		out.Message = "Commands active in this checkout; reads are live snapshots and branch transitions are locked."
+		return out, nil
+	}
 	// File work remains available without command execution, including on other OSes.
 	caps := s.runner.Capabilities()
 	ready, hasReady := caps["execution_ready"].(bool)
@@ -249,17 +261,13 @@ func (s *Service) inspect(ctx context.Context, path string) (Info, error) {
 func (s *Service) Inspect(ctx context.Context, path string) (Info, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.busy {
-		return Info{}, errors.New("a job is active; wait or cancel before inspecting Git")
-	}
+
 	return s.inspect(ctx, path)
 }
 func (s *Service) Selection(ctx context.Context) (Info, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.busy {
-		return Info{Target: s.selected, Remembered: s.remembered, Message: "A job is active. This is the remembered selection; inspect again after completion."}, nil
-	}
+
 	out, e := s.inspect(ctx, s.selected.Directory)
 	if e != nil {
 		return Info{Target: s.selected, Remembered: s.remembered, Message: "Saved workspace unavailable: " + e.Error()}, nil
@@ -273,8 +281,8 @@ func (s *Service) Selection(ctx context.Context) (Info, error) {
 func (s *Service) Select(ctx context.Context, t Target, create bool, base string) (Info, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.busy {
-		return Info{}, errors.New("cannot switch workspace/branch while a job is active")
+	if s.conflict(t.Directory) {
+		return Info{}, errors.New("cannot switch this checkout while a job is active")
 	}
 	out, e := s.inspect(ctx, t.Directory)
 	if e != nil {
@@ -363,9 +371,7 @@ func (s *Service) validate(ctx context.Context, t Target) (*os.Root, error) {
 func (s *Service) Read(ctx context.Context, t Target, path string) (files.File, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.busy {
-		return files.File{}, errors.New("job active; read after completion for a consistent revision")
-	}
+
 	r, e := s.validate(ctx, t)
 	if e != nil {
 		return files.File{}, e
@@ -379,8 +385,8 @@ func (s *Service) Read(ctx context.Context, t Target, path string) (files.File, 
 func (s *Service) Write(ctx context.Context, t Target, path, text, revision string) (files.File, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.busy {
-		return files.File{}, errors.New("job active; writes are locked")
+	if s.exclusiveConflict(t.Directory) {
+		return files.File{}, errors.New("job active in this checkout; writes are locked")
 	}
 	r, e := s.validate(ctx, t)
 	if e != nil {
@@ -395,8 +401,8 @@ func (s *Service) Write(ctx context.Context, t Target, path, text, revision stri
 func (s *Service) Remove(ctx context.Context, t Target, path, revision string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.busy {
-		return errors.New("job active; writes are locked")
+	if s.exclusiveConflict(t.Directory) {
+		return errors.New("job active in this checkout; writes are locked")
 	}
 	r, e := s.validate(ctx, t)
 	if e != nil {
@@ -420,8 +426,8 @@ func (s *Service) ReserveCommand(ctx context.Context, t Target) (*os.Root, strin
 func (s *Service) reserve(ctx context.Context, t Target, command bool) (*os.Root, string, func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.busy {
-		return nil, "", nil, errors.New("another job is active; only one command runs at a time")
+	if !command && s.conflict(t.Directory) {
+		return nil, "", nil, errors.New("another job is active in this checkout; stop it before starting a conflicting command")
 	}
 	r, e := s.validate(ctx, t)
 	if e != nil {
@@ -449,9 +455,36 @@ func (s *Service) reserve(ctx context.Context, t Target, command bool) (*os.Root
 			}
 		}
 	}
-	s.busy = true
+	key, _ := filepath.Rel(s.rootPath, r.Name())
+	key = filepath.Clean(key)
+	for active, lease := range s.busy {
+		if active == key && command && !lease.exclusive {
+			continue
+		}
+		if overlaps(active, key) {
+			r.Close()
+			return nil, "", nil, errors.New("overlapping command boundary is active; use the same checkout boundary or stop it")
+		}
+	}
+	lease := s.busy[key]
+	lease.count++
+	lease.exclusive = !command
+	s.busy[key] = lease
 	var once sync.Once
-	release := func() { once.Do(func() { r.Close(); s.mu.Lock(); s.busy = false; s.mu.Unlock() }) }
+	release := func() {
+		once.Do(func() {
+			r.Close()
+			s.mu.Lock()
+			lease := s.busy[key]
+			lease.count--
+			if lease.count == 0 {
+				delete(s.busy, key)
+			} else {
+				s.busy[key] = lease
+			}
+			s.mu.Unlock()
+		})
+	}
 	return r, prefix, release, nil
 }
 
@@ -497,4 +530,69 @@ func (s *Service) Tree(path string, depth int) (Tree, error) {
 	}
 	e := walk(path, 0)
 	return out, e
+}
+
+// conflict treats both a checkout and any overlapping non-Git parent/child as
+// one branch transition boundary. Jobs on the exact same checkout may share it.
+func (s *Service) conflict(path string) bool {
+	key := filepath.Clean(path)
+	if repo, ok, err := s.repo(path); err == nil && ok {
+		key = filepath.Clean(repo)
+	}
+	for active := range s.busy {
+		rel, err := filepath.Rel(active, key)
+		if err == nil && (rel == "." || filepath.IsLocal(rel)) {
+			return true
+		}
+		rel, err = filepath.Rel(key, active)
+		if err == nil && (rel == "." || filepath.IsLocal(rel)) {
+			return true
+		}
+	}
+	return false
+}
+func overlaps(a, b string) bool {
+	rel, err := filepath.Rel(a, b)
+	if err == nil && (rel == "." || filepath.IsLocal(rel)) {
+		return true
+	}
+	rel, err = filepath.Rel(b, a)
+	return err == nil && (rel == "." || filepath.IsLocal(rel))
+}
+func (s *Service) exclusiveConflict(path string) bool {
+	key := filepath.Clean(path)
+	if repo, ok, err := s.repo(path); err == nil && ok {
+		key = filepath.Clean(repo)
+	}
+	for active, lease := range s.busy {
+		if lease.exclusive && overlaps(active, key) {
+			return true
+		}
+	}
+	return false
+}
+func (s *Service) CommandBoundary(t Target) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.validate(context.Background(), t)
+	if err != nil {
+		return "", err
+	}
+	r.Close()
+	repo, ok, err := s.repo(t.Directory)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return filepath.ToSlash(repo), nil
+	}
+	return filepath.ToSlash(filepath.Clean(t.Directory)), nil
+}
+
+func (s *Service) RootDirectory(r *os.Root) string {
+	path, err := filepath.Rel(s.rootPath, r.Name())
+	if err != nil {
+		return ""
+	}
+	return filepath.ToSlash(path)
 }

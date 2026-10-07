@@ -102,8 +102,8 @@ func TestTransportEnvironmentAndSSHBoundaries(t *testing.T) {
 	inside := filepath.Join(root, "key")
 	os.WriteFile(inside, []byte("test-key"), 0600)
 	t.Setenv("PC_MCP_SSH_KEY_FILE", inside)
-	if _, err := Parse(args); err == nil {
-		t.Fatal("SSH key in workspace accepted")
+	if _, err := Parse(args); err != nil {
+		t.Fatal("owner's SSH configuration in workspace prevented startup", err)
 	}
 	jobCache := filepath.Join(d, "jobcache")
 	os.Mkdir(jobCache, 0700)

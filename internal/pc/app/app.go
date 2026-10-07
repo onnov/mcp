@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/onnov/mcp/internal/pc/config"
+	"github.com/onnov/mcp/internal/pc/egress"
 	"github.com/onnov/mcp/internal/pc/jobs"
 	"github.com/onnov/mcp/internal/pc/netproxy"
 	"github.com/onnov/mcp/internal/pc/sandbox"
@@ -21,6 +22,11 @@ import (
 )
 
 func Run(args []string) error {
+	if len(args) == 2 && args[0] == "--job-proxy" {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		return egress.Bridge(ctx, args[1])
+	}
 	if len(args) == 1 && args[0] == "--hash-password" {
 		return hashPassword()
 	}
@@ -48,7 +54,12 @@ func Serve(ctx context.Context, cfg config.Config) error {
 			fmt.Fprintln(os.Stderr, "pc-mcp: SOCKS5 proxy enabled; tunnel DNS is resolved by the proxy")
 		}
 	}
-	engine := &sandbox.Engine{Cache: cfg.State + "/cache", Toolchains: cfg.Toolchains, AllowNetwork: cfg.Network, MaxSeconds: cfg.MaxSeconds, GHtoken: os.Getenv("PC_MCP_GH_TOKEN")}
+	engine := &sandbox.Engine{Cache: cfg.State + "/cache", Toolchains: cfg.Toolchains, AllowNetwork: cfg.Network, MaxSeconds: cfg.MaxSeconds, GHtoken: os.Getenv("PC_MCP_GH_TOKEN"), State: cfg.State, RequireResources: true, CgroupRoot: cfg.CgroupRoot, MemoryReserve: cfg.MemoryReserveMiB << 20, MemoryMax: cfg.MemoryMaxMiB << 20, DiskReserve: cfg.DiskReserveMiB << 20, MaxProcesses: cfg.MaxProcesses, AllowPrivateNetwork: cfg.PrivateNetwork, AllowHostNetwork: cfg.HostNetwork}
+	engine.BestEffortResources = cfg.ResourceMode != "strict"
+	engine.TmpMaxBytes = cfg.TmpMaxMiB << 20
+	if cfg.ResourceMode == "strict" && engine.TmpMaxBytes == 0 {
+		engine.TmpMaxBytes = 1 << 30
+	}
 	engine.Configure(cfg.Root)
 	ws, e := workspace.New(cfg.Root, cfg.State, engine)
 	if e != nil {
@@ -56,6 +67,8 @@ func Serve(ctx context.Context, cfg config.Config) error {
 	}
 	defer ws.Close()
 	jm := jobs.New(ctx, ws, engine, cfg.MaxSeconds)
+	jm.ConfirmCommands = cfg.ConfirmCommands
+	jm.MaxActive = cfg.MaxJobs
 	defer jm.Close()
 	server := tools.New(ws, jm, tools.Options{OAuth: cfg.Transport == "http" || cfg.Transport == "ssh"})
 	if cfg.Transport == "http" || cfg.Transport == "ssh" {

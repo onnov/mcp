@@ -2,6 +2,7 @@ package netproxy
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/url"
 	"time"
@@ -25,5 +26,9 @@ func DialContext(u *url.URL) (func(context.Context, string, string) (net.Conn, e
 	if err != nil {
 		return nil, err
 	}
-	return d.(proxy.ContextDialer).DialContext, nil
+	cd, ok := d.(proxy.ContextDialer)
+	if !ok {
+		return nil, errors.New("SOCKS5 dialer does not support context cancellation")
+	}
+	return cd.DialContext, nil
 }

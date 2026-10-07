@@ -29,7 +29,18 @@ func httpHandler(cfg config.Config, server *mcp.Server) (http.Handler, error) {
 	// public domain. The SDK's loopback-only default would reject that domain
 	// after the reverse proxy forwards it to this loopback listener.
 	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true})
-	mux.Handle("/mcp", auth.Protect(transport))
+	mcpSlots := make(chan struct{}, 8)
+	mux.Handle("/mcp", auth.Protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case mcpSlots <- struct{}{}:
+			defer func() { <-mcpSlots }()
+		default:
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "server busy", 429)
+			return
+		}
+		transport.ServeHTTP(w, r)
+	})))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(405)
@@ -43,7 +54,8 @@ func httpHandler(cfg config.Config, server *mcp.Server) (http.Handler, error) {
 	if cfg.SSH.RemoteAddr != "" {
 		hosts[cfg.SSH.RemoteAddr] = true
 	}
-	slots := make(chan struct{}, 8)
+	publicSlots := make(chan struct{}, 4)
+	publicLimit := &ownerauth.Limiter{Max: 120, Period: time.Minute}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -56,13 +68,20 @@ func httpHandler(cfg config.Config, server *mcp.Server) (http.Handler, error) {
 			http.Error(w, "origin not allowed", 403)
 			return
 		}
-		select {
-		case slots <- struct{}{}:
-			defer func() { <-slots }()
-		default:
-			w.Header().Set("Retry-After", "1")
-			http.Error(w, "server busy", 429)
-			return
+		if r.URL.Path != "/mcp" {
+			if !publicLimit.Allow(ownerauth.ClientIP(r, cfg.OAuth.TrustedProxies)) {
+				w.Header().Set("Retry-After", "60")
+				http.Error(w, "rate limited", 429)
+				return
+			}
+			select {
+			case publicSlots <- struct{}{}:
+				defer func() { <-publicSlots }()
+			default:
+				w.Header().Set("Retry-After", "1")
+				http.Error(w, "server busy", 429)
+				return
+			}
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
 		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
@@ -95,7 +114,9 @@ func serveHTTP(ctx context.Context, cfg config.Config, mcpServer *mcp.Server) er
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	httpDone := make(chan error, 1)
-	go func() { httpDone <- server.Serve(listener) }()
+	go func() {
+		httpDone <- server.Serve(&limitedListener{Listener: listener, slots: make(chan struct{}, 128)})
+	}()
 	var sshDone chan error
 	if tunnel != nil {
 		sshDone = make(chan error, 1)

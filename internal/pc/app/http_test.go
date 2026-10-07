@@ -146,7 +146,7 @@ func TestPCAuthenticatedHTTPWithoutGitHub(t *testing.T) {
 	}
 	defer session.Close()
 	list, err := session.ListTools(ctx, nil)
-	if err != nil || len(list.Tools) != 16 {
+	if err != nil || len(list.Tools) != 18 {
 		t.Fatal("HTTP tool discovery failed", err)
 	}
 	for _, tool := range list.Tools {

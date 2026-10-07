@@ -24,6 +24,7 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
 <button id="more" hidden>Ещё</button>
 <button id="candidate">Выбрать эту папку</button>
 <div id="branch-panel" hidden>
+  <p id="command-boundary"></p>
   <label for="branch-search">Ветка</label>
   <input id="branch-search" type="search" placeholder="Поиск локальных веток">
   <select id="branch" aria-label="Ветка"></select>
@@ -31,6 +32,7 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
   <small id="hint"></small>
   <p><button id="apply">Подтвердить каталог и ветку</button></p>
 </div>
+<p><button id="jobs-refresh">Задания</button> <button id="jobs-stop-all">Остановить все команды</button></p><div id="jobs"></div>
 <div id="message" role="status" aria-live="polite"></div>
 <script>/*BRIDGE*/</script>
 <script>
@@ -39,7 +41,7 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
  const $=id=>document.getElementById(id);
  let folder='.',candidate=null,next=-1,epoch=0,rows=[],busy=false,initial=null;
  const status=(text,error=false)=>{$('message').textContent=text;$('message').classList.toggle('error',error);PC.resize()};
- const context=async(s)=>PC.context({pcWorkspace:{directory:s.directory,branch:s.branch}},'PC workspace: directory='+s.directory+'; branch='+(s.branch||'(no Git)')+'. Use these explicit values for every operation.');
+ const context=async(s)=>PC.context({pcWorkspace:{directory:s.directory,branch:s.branch,command_directory:s.git_root||s.directory}},'PC workspace: directory='+s.directory+'; branch='+(s.branch||'(no Git)')+'. Use these explicit values for every operation.');
  const lock=value=>{busy=value;for(const id of ['root','up','candidate','apply','more','branch','branch-search','new-branch'])$(id).disabled=value};
  function render(){
   const box=$('rows');box.replaceChildren();
@@ -83,7 +85,7 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
  $('candidate').onclick=async()=>{
   if(busy)return;lock(true);render();
   try{
-   candidate=await PC.tool('pc_inspect_workspace',{directory:folder});$('branch-panel').hidden=false;$('branch-search').value='';branches();
+   candidate=await PC.tool('pc_inspect_workspace',{directory:folder});$('command-boundary').textContent='Область выполнения команд: '+(candidate.git_root||candidate.directory);$('branch-panel').hidden=false;$('branch-search').value='';branches();
    $('hint').textContent=candidate.dirty?'Есть незакоммиченные изменения. Для смены ветки сначала сохраните их.':candidate.git?(candidate.message||'Новая ветка создаётся от текущей ветки.'):'Файлы можно редактировать без Git.';
    status('Проверьте ветку перед началом работы.');
   }catch(error){status(error.message,true)}finally{lock(false);render()}
@@ -100,6 +102,12 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
    status('Выбор сохранён. Опишите задачу в чате.');
   }catch(error){status(error.message,true)}finally{lock(false);render()}
  };
+ async function refreshJobs(){
+  const result=await PC.tool('pc_list_jobs',{});const box=$('jobs');box.replaceChildren();
+  for(const job of result.jobs||[]){const row=document.createElement('div');row.textContent=job.status+' · '+job.request.directory+' · '+JSON.stringify(job.request.args).slice(0,160);if(['running','queued','awaiting_approval'].includes(job.status)){const button=document.createElement('button');button.textContent='Остановить';button.onclick=async()=>{try{await PC.tool('pc_cancel_job',{id:job.id});await refreshJobs();status('Остановка запрошена. Обновите задания для результата.')}catch(e){status(e.message,true)}};row.append(button)}box.append(row)}PC.resize()
+ }
+ $('jobs-refresh').onclick=async()=>{try{await refreshJobs()}catch(e){status(e.message,true)}};
+ $('jobs-stop-all').onclick=async()=>{try{await PC.tool('pc_cancel_all_jobs',{});await refreshJobs();status('Остановка всех команд запрошена.')}catch(e){status(e.message,true)}};
  $('root').onclick=()=>navigate('.');
  $('up').onclick=()=>navigate(folder.includes('/')?folder.slice(0,folder.lastIndexOf('/')):'.');
  $('more').onclick=()=>{if(!busy)return load(true)};

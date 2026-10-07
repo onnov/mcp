@@ -168,16 +168,25 @@ func TestLoginCSRFPasswordAndExpiry(t *testing.T) {
 		t.Fatal("incorrect password accepted")
 	}
 	f.Set("password", testPassword)
-	if w := request(h, "POST", "/oauth/login", f, map[string]string{"Origin": s.PublicURL}, cookie); w.Code != 400 {
-		t.Fatal("browser nonce replay accepted")
+	if w := request(h, "POST", "/oauth/login", f, map[string]string{"Origin": s.PublicURL}, cookie); w.Code != 303 {
+		t.Fatal("valid retry rejected", w.Code)
 	}
+	if w := request(h, "POST", "/oauth/login", f, map[string]string{"Origin": s.PublicURL}, cookie); w.Code != 400 {
+		t.Fatal("successful browser nonce replay accepted")
+	}
+
 	nonce, cookie = begin(t, s, h)
 	f.Set("request", nonce)
-	s.mu.Lock()
-	p := s.pending[hash(nonce)]
+	p, err := s.openEnvelope(nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p.Expires = time.Now().Add(-time.Second)
-	s.pending[hash(nonce)] = p
-	s.mu.Unlock()
+	expired, err := s.seal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Set("request", expired)
 	if w := request(h, "POST", "/oauth/login", f, map[string]string{"Origin": s.PublicURL}, cookie); w.Code != 400 {
 		t.Fatal("expired login accepted")
 	}
@@ -196,7 +205,7 @@ func TestLoginCSRFPasswordAndExpiry(t *testing.T) {
 func TestOwnerLoginRateLimitAndUnsafeConfiguration(t *testing.T) {
 	s, h := testServer(t)
 	for i := 0; i < 10; i++ {
-		if !s.allowAttempt() {
+		if !s.loginLimit.Allow("192.0.2.1") {
 			t.Fatal("limit before 10")
 		}
 	}
