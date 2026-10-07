@@ -11,6 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/onnov/mcp/internal/pc/jobs"
 	"github.com/onnov/mcp/internal/pc/sandbox"
+	"github.com/onnov/mcp/internal/pc/ui"
 	"github.com/onnov/mcp/internal/pc/workspace"
 )
 
@@ -20,6 +21,10 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	state := filepath.Join(d, "state")
 	os.Mkdir(root, 0700)
 	os.Mkdir(state, 0700)
+	const deep = "AI/project/a/b/c/d/e/f"
+	if e := os.MkdirAll(filepath.Join(root, deep, "child"), 0700); e != nil {
+		t.Fatal(e)
+	}
 	engine := &sandbox.Engine{MaxSeconds: 10}
 	ws, e := workspace.New(root, state, engine)
 	if e != nil {
@@ -43,8 +48,8 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(list.Tools) != 16 {
-		t.Fatalf("expected 16 tools, got %d", len(list.Tools))
+	if len(list.Tools) != 18 {
+		t.Fatalf("expected 18 tools, got %d", len(list.Tools))
 	}
 	call := func(name string, args any) *mcp.CallToolResult {
 		t.Helper()
@@ -53,6 +58,72 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 			t.Fatal(e)
 		}
 		return r
+	}
+	for _, tool := range list.Tools {
+		if tool.Name == "pc_open_workspace_picker" || tool.Name == "pc_list_directory" || tool.Name == "pc_directory_tree" {
+			meta := tool.Meta["ui"].(map[string]any)
+			if meta["resourceUri"] != ui.PickerURI || tool.Meta["openai/outputTemplate"] != ui.PickerURI {
+				t.Fatal("directory browsing tool missing interactive picker", tool.Name)
+			}
+		}
+		if tool.Name == "pc_start_job" || tool.Name == "pc_request_run" {
+			meta := tool.Meta["ui"].(map[string]any)
+			if meta["resourceUri"] != ui.ApprovalURI || tool.Meta["openai/outputTemplate"] != ui.ApprovalURI {
+				t.Fatal("command tool missing current approval UI", tool.Name, meta["resourceUri"], tool.Meta["openai/outputTemplate"])
+			}
+		}
+	}
+	for _, name := range []string{"pc_list_directory", "pc_directory_tree"} {
+		r := call(name, map[string]any{"path": "AI"})
+		if r.IsError || r.Meta["pc_browser_path"] != "AI" {
+			t.Fatal("directory card lost requested starting path", name, r)
+		}
+	}
+	decodePicker := func(args any) Picker {
+		t.Helper()
+		r := call("pc_open_workspace_picker", args)
+		if r.IsError {
+			t.Fatal(r.Content)
+		}
+		b, _ := json.Marshal(r.StructuredContent)
+		var p Picker
+		if e := json.Unmarshal(b, &p); e != nil {
+			t.Fatal(e)
+		}
+		return p
+	}
+	if p := decodePicker(map[string]any{"path": deep}); p.BrowserPath != deep || len(p.Directories.Entries) != 1 || p.Directories.Entries[0].Name != "child" {
+		t.Fatal("picker cannot open a directory beyond the text tree depth", p)
+	}
+	if _, e := ws.Select(ctx, workspace.Target{Directory: deep}, false, ""); e != nil {
+		t.Fatal(e)
+	}
+	if p := decodePicker(map[string]any{}); p.BrowserPath != deep || p.Selection.Directory != deep {
+		t.Fatal("picker failed to restore remembered directory", p)
+	}
+	if p := decodePicker(map[string]any{"path": "."}); p.BrowserPath != "." || p.Selection.Directory != deep {
+		t.Fatal("browsing root changed the remembered workspace", p)
+	}
+	if r := call("pc_open_workspace_picker", map[string]any{"path": "../outside"}); !r.IsError {
+		t.Fatal("picker escaped the allowed root")
+	}
+	for _, uri := range []string{ui.PickerURI, ui.PreviousPickerURI, ui.OlderPickerURI, ui.OldestPickerURI, ui.LegacyPickerURI} {
+		resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+		if e != nil {
+			t.Fatal("directory picker resource unavailable", uri, e)
+		}
+		if len(resource.Contents) != 1 || resource.Contents[0].URI != uri || resource.Contents[0].MIMEType != ui.MIMEType || resource.Contents[0].Text != ui.Picker || !strings.Contains(resource.Contents[0].Text, `id="breadcrumbs"`) {
+			t.Fatal("cached or current picker URI did not return the latest interactive UI", uri)
+		}
+	}
+	for _, uri := range []string{ui.ApprovalURI, ui.PreviousApprovalURI, ui.OlderApprovalURI, ui.OldestApprovalURI, ui.EarlierApprovalURI, ui.LegacyApprovalURI} {
+		resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+		if e != nil {
+			t.Fatal("approval resource unavailable", uri, e)
+		}
+		if len(resource.Contents) != 1 || resource.Contents[0].URI != uri || resource.Contents[0].MIMEType != ui.MIMEType || resource.Contents[0].Text != ui.Approval || !strings.Contains(resource.Contents[0].Text, "Ожидайте. Команда выполняется") || !strings.Contains(resource.Contents[0].Text, "records_cursor") || strings.Contains(resource.Contents[0].Text, "PC.tool('pc_job_output'") || strings.Contains(resource.Contents[0].Text, "/*BRIDGE*/") {
+			t.Fatal("cached or current approval URI did not return the latest UI", uri)
+		}
 	}
 	r := call("pc_write_file", map[string]any{"directory": ".", "branch": "", "path": "a.txt", "text": "one", "expected_revision": "new"})
 	if r.IsError {
@@ -63,11 +134,11 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	if !json.Valid(b) {
 		t.Fatal("no structured content")
 	}
-	r = call("pc_start_job", map[string]any{"directory": ".", "branch": "", "args": []string{"echo", "run"}, "purpose": "run", "seconds": 1})
+	r = call("pc_start_job", map[string]any{"directory": ".", "branch": "", "args": []string{"echo", "run"}, "purpose": "run", "network": true, "seconds": 1})
 	if !r.IsError {
 		t.Fatal("run bypassed confirmation card")
 	}
-	r = call("pc_request_run", map[string]any{"directory": ".", "branch": "", "args": []string{"echo", "run"}, "purpose": "run", "seconds": 1})
+	r = call("pc_request_run", map[string]any{"directory": ".", "branch": "", "args": []string{"echo", "run"}, "purpose": "run", "network": true, "seconds": 1})
 	if r.IsError {
 		t.Fatal(r.Content)
 	}

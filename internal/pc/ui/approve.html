@@ -1,12 +1,222 @@
-<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подтверждение запуска</title><style>:root{color-scheme:light dark}body{font:14px system-ui;margin:0;padding:16px}h1{font-size:17px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#8881;padding:12px;border-radius:8px;max-height:300px;overflow:auto}button{font:inherit;padding:9px 16px;margin-right:8px;cursor:pointer}button:disabled{opacity:.5;cursor:default}#status{margin:12px 0}#target{overflow-wrap:anywhere}.error{color:#e44}</style>
-<h1>Запустить команду на ПК?</h1><p id="target"></p><pre id="command"></pre><p id="policy"></p><button id="approve" disabled>Разрешить запуск</button><button id="cancel" disabled>Отменить</button><div id="status" role="status" aria-live="polite">Ожидание параметров…</div><pre id="output" hidden></pre>
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подтверждение запуска</title><style>:root{color-scheme:light dark}body{font:14px system-ui;margin:0;padding:16px}h1{font-size:17px;margin:0 0 12px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#8881;padding:12px;border-radius:8px;max-height:420px;overflow:auto}button{font:inherit;padding:9px 16px;margin:0 8px 8px 0;cursor:pointer}button:disabled{opacity:.5;cursor:default}.actions{margin-top:12px}#status{margin:12px 0;font-weight:600}#target,#policy,#metrics{overflow-wrap:anywhere}#metrics{font-size:12px;opacity:.85;margin:8px 0}.error{color:#e44}.ok{color:#2a8}.muted{opacity:.7}</style>
+<h1>Запуск команды на ПК</h1><p id="target"></p><pre id="command"></pre><p id="policy"></p><div class="actions"><button id="approve" disabled>Разрешить запуск</button><button id="cancel" disabled>Остановить эту команду</button><button id="stop-all" hidden disabled>Остановить все команды</button></div><div id="status" role="status" aria-live="polite">Ожидание параметров…</div><div id="metrics" class="muted"></div><pre id="output" hidden></pre>
 <script>/*BRIDGE*/</script><script>
-(async()=>{'use strict';const $=id=>document.getElementById(id);let job=null,nonce='',ready=false,initial=null,pollTimer=null,cursor=0,log=[];
- const status=(t,error=false)=>{$('status').textContent=t;$('status').classList.toggle('error',error);PC.resize()};
- function receive(r){if(!r?.structuredContent?.id)return;job=r.structuredContent;nonce=r._meta?.approval_nonce||window.openai?.toolResponseMetadata?.approval_nonce||nonce;const q=job.request;$('target').textContent='Каталог: '+q.directory+' · Ветка: '+(q.branch||'без Git')+' · cwd: '+q.cwd;$('command').textContent=JSON.stringify(q.args,null,2);$('policy').textContent='Назначение: '+q.purpose+' · сеть: '+(q.network?'разрешена':'выключена')+' · лимит: '+q.seconds+' сек.'+(q.credential?' · будет передан отдельный GitHub-токен':'');$('approve').disabled=!ready||!nonce||job.status!=='awaiting_approval';$('cancel').disabled=!ready;if(!nonce&&ready)status('Клиент не передал приватные данные подтверждения. Запуск заблокирован; обновите приложение.',true);else status('Команда ещё не запущена.');PC.resize()}
- async function poll(){if(!job)return;try{const v=await PC.tool('pc_job_status',{id:job.id,after:cursor});cursor=v.output.cursor;for(const l of [...v.output.head,...v.output.tail])log.push(l.stream+': '+l.text+(l.truncated?' [длинная строка разделена]':''));if(log.length>110)log=log.slice(-110);$('output').hidden=false;$('output').textContent=log.join('\n');status(v.status+(v.error?' · '+v.error:'')+(v.output.message?' · '+v.output.message:'')+(v.output.omitted?' · пропущено записей: '+v.output.omitted:''));await PC.context({pcJob:{id:v.id,status:v.status}},'PC command job '+v.id+' is '+v.status+'. Poll pc_job_status for the result.');if(v.status==='running')pollTimer=setTimeout(poll,2000);else $('cancel').disabled=true}catch(e){status(e.message,true)}}
- $('approve').onclick=async()=>{if(!job||!nonce)return;$('approve').disabled=true;try{const v=await PC.tool('pc_approve_run',{id:job.id,approval_nonce:nonce});nonce='';job=v;status('Запущено: '+v.id);await PC.context({pcJob:{id:v.id,status:v.status}},'User confirmed PC command. Job ID: '+v.id+'. Poll pc_job_status; do not start a duplicate job.');poll()}catch(e){status(e.message,true);$('approve').disabled=!nonce}};
- $('cancel').onclick=async()=>{if(!job)return;clearTimeout(pollTimer);$('approve').disabled=true;try{await PC.tool('pc_cancel_job',{id:job.id});poll()}catch(e){status(e.message,true)}};
- PC.onResult(r=>{initial=r;if(ready)receive(r)});try{await PC.ready();ready=true;if(initial)receive(initial)}catch(e){status(e.message,true)};
+(async () => {
+ 'use strict';
+ const $ = id => document.getElementById(id);
+ const terminal = new Set(['succeeded', 'failed', 'cancelled', 'timed_out', 'expired']);
+ const labels = {
+  awaiting_approval: 'Команда ещё не запущена. Нажмите «Разрешить запуск».',
+  queued: 'Ожидайте. Команда поставлена в очередь…',
+  running: 'Ожидайте. Команда выполняется…',
+  succeeded: 'Команда выполнена успешно', failed: 'Команда завершилась с ошибкой',
+  cancelled: 'Команда отменена', timed_out: 'Превышен лимит времени',
+  expired: 'Срок подтверждения истёк'
+ };
+ let ready = false, initial = null, jobID = '', job = null, nonce = '';
+ let approvalConsumed = false, action = '', approvalError = '', statusError = '';
+ let pollTimer = null, pollPromise = null, statusAfter = 0;
+ let evicted = 0, outputMore = false, outputMode = 'records', lastContext = '';
+ const consoleRecords = new Map();
+
+ const status = (text, error = false, ok = false) => {
+  $('status').textContent = text;
+  $('status').classList.toggle('error', error); $('status').classList.toggle('ok', ok);
+  PC.resize();
+ };
+ const isRunning = () => !!job && ['running', 'queued'].includes(job.status);
+ const humanBytes = n => !n ? '0 Б' : n < 1024 ? n + ' Б' : n < 1024 * 1024
+  ? (n / 1024).toFixed(1) + ' КиБ' : (n / 1024 / 1024).toFixed(1) + ' МиБ';
+ function elapsed(v) {
+  if (!v.started || v.started.startsWith('0001-')) return '';
+  const end = v.finished && !v.finished.startsWith('0001-') ? Date.parse(v.finished) : Date.now();
+  const start = Date.parse(v.started);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return '';
+  const ms = Math.max(0, end - start);
+  return ms < 1000 ? ms + ' мс' : (ms / 1000).toFixed(2) + ' с';
+ }
+ function consumeApproval() {
+  nonce = '';
+  if (approvalConsumed) return;
+  approvalConsumed = true;
+  const api = window.openai;
+  if (api?.setWidgetState) {
+   const state = api.widgetState || {};
+   try {
+    const saved = api.setWidgetState({...state, privateContent: {...state.privateContent,
+     pcApproval: {id: jobID, consumed: true}}});
+    saved?.catch?.(() => {});
+   } catch (_) {}
+  }
+ }
+ function renderButtons() {
+  $('approve').hidden = !!job && !nonce && !approvalConsumed && job.status !== 'awaiting_approval';
+  $('approve').textContent = approvalConsumed ? 'Запуск разрешён' : 'Разрешить запуск';
+  $('approve').disabled = !ready || !job || job.status !== 'awaiting_approval'
+   || approvalConsumed || !nonce || !!action || !!statusError;
+  $('cancel').hidden = false;
+  $('cancel').disabled = !ready || !isRunning() || !!action;
+  $('stop-all').hidden = !isRunning();
+  $('stop-all').disabled = $('cancel').disabled;
+ }
+ function renderConsole() {
+  const rows = [...consoleRecords.values()].sort((a,b) => a.sequence-b.sequence);
+  $('output').hidden = rows.length === 0;
+  $('output').textContent = rows.map(l => String(l.sequence).padStart(5, '0') + ' ['
+   + (l.stream === 'stderr' ? 'stderr' : 'stdout') + '] ' + l.text
+   + (l.truncated ? '  [фрагмент длинной строки]' : '')).join('\n');
+ }
+ function addRecords(rows) {
+  for (const l of rows || []) {
+   if (!Number.isInteger(l.sequence) || l.sequence < 1 || consoleRecords.has(l.sequence)) continue;
+   consoleRecords.set(l.sequence, l);
+  }
+  renderConsole();
+ }
+ function acceptOutput(out) {
+  if (!out) return;
+  if (Array.isArray(out.records)) {
+   outputMode = 'records';
+   addRecords(out.records);
+   if (Number.isInteger(out.records_cursor) && out.records_cursor >= statusAfter) statusAfter = out.records_cursor;
+   if (out.evicted) evicted += out.evicted;
+   outputMore = out.more === true;
+   return;
+  }
+  // Backward-compatible fallback for older servers: still show useful output
+  // without any second tool call.
+  outputMode = 'compact';
+  addRecords([...(out.head || []), ...(out.tail || [])]);
+  if (Number.isInteger(out.cursor) && out.cursor >= statusAfter) statusAfter = out.cursor;
+  outputMore = false;
+ }
+ function renderMetrics() {
+  if (!job) return;
+  const parts = [];
+  if (job.exit_code !== undefined && job.exit_code !== null) parts.push('exit code: ' + job.exit_code);
+  const d = elapsed(job); if (d) parts.push('время: ' + d);
+  if (job.output) {
+   parts.push('вывод: ' + job.output.total_records + ' записей / ' + humanBytes(job.output.bytes));
+   if (outputMode === 'compact' && job.output.omitted) {
+    parts.push('показаны начало/конец; пропущено записей: ' + job.output.omitted);
+   }
+  }
+  if (evicted) parts.push('удалено из retained-лога до чтения: ' + evicted);
+  if (outputMore) parts.push('загружается оставшийся вывод');
+  $('metrics').textContent = parts.join(' · ');
+ }
+ function render() {
+  renderButtons(); renderMetrics();
+  if (!jobID) return;
+  if (!job) return status(statusError ? 'Не удалось проверить состояние: ' + statusError
+   : 'Проверка состояния команды…', !!statusError);
+  let label = labels[job.status] || job.status;
+  if (!terminal.has(job.status)) {
+   if (action === 'approve') label = 'Ожидайте. Команда выполняется…';
+   else if (action) label = 'Запрошена остановка команды…';
+   else if (job.status === 'awaiting_approval' && approvalConsumed) label = approvalError
+    || 'Подтверждение отправлено. Ожидайте запуска команды…';
+   else if (job.status === 'awaiting_approval' && !nonce) label =
+    'Клиент не передал приватные данные подтверждения. Запуск заблокирован; обновите приложение.';
+  } else label += ' (' + job.status + ')';
+  const details = [job.error, statusError && 'Не удалось обновить состояние: ' + statusError,
+   evicted && 'часть старого вывода удалена из памяти'].filter(Boolean);
+  status(label + ' · ' + jobID + (details.length ? ' · ' + details.join(' · ') : ''),
+   ['failed', 'timed_out', 'expired'].includes(job.status) || !!statusError
+    || job.status === 'awaiting_approval' && (!!approvalError || !nonce && !approvalConsumed),
+   job.status === 'succeeded');
+ }
+ function renderRequest(v) {
+  const q = v.request;
+  $('target').textContent = 'Каталог: ' + q.directory + ' · Область команд: '
+   + (v.command_directory || q.directory) + ' · Ветка: ' + (q.branch || 'без Git') + ' · cwd: ' + (q.cwd || '.');
+  $('command').textContent = JSON.stringify(q.args, null, 2);
+  const network = q.host_network ? 'сеть ПК: Интернет, localhost, LAN и VPN' : !q.network ? 'выключена'
+   : v.network_policy === 'private-proxy' ? 'через proxy, включая разрешённые localhost/LAN'
+   : v.network_policy === 'public-proxy' ? 'через proxy, только публичные адреса'
+   : 'через proxy; локальные адреса зависят от настроек оператора';
+  $('policy').textContent = 'Назначение: ' + q.purpose + ' · сеть: ' + network + ' · лимит: ' + q.seconds
+   + ' сек.' + (q.credential ? ' · GitHub: доступ в пределах разрешений токена через серверный proxy' : '');
+ }
+ function publishContext() {
+  const rows = [...consoleRecords.values()];
+  const data = {pcJob: {id: jobID, status: job.status, exitCode: job.exit_code,
+   uiVersion: PC.version, outputSource: outputMode === 'records' ? 'pc_job_status.output.records' : 'pc_job_status.output.head/tail',
+   renderedRecords: rows.length, renderedStdout: rows.filter(l => l.stream !== 'stderr').length,
+   renderedStderr: rows.filter(l => l.stream === 'stderr').length,
+   outputCursor: statusAfter, outputMore}};
+  const key = JSON.stringify(data);
+  if (key === lastContext) return;
+  lastContext = key;
+  void PC.context(data, 'PC command job ' + jobID + ' is ' + job.status
+   + '. Do not start a duplicate job. Console output is included in pc_job_status.')
+   .catch(() => {});
+ }
+ async function poll() {
+  if (!ready || !jobID) return;
+  clearTimeout(pollTimer); pollTimer = null;
+  if (pollPromise) return pollPromise;
+  pollPromise = (async () => {
+   try {
+    if (!job || !terminal.has(job.status) || outputMore) {
+     const v = await PC.tool('pc_job_status', {id: jobID, after: statusAfter});
+     if (v.id !== jobID || typeof v.status !== 'string') throw Error('Некорректный ответ pc_job_status');
+     job = v;
+     acceptOutput(v.output);
+     statusError = '';
+     if (v.status !== 'awaiting_approval') consumeApproval();
+     render();
+     if (v.status !== 'awaiting_approval') publishContext();
+    }
+   } catch (e) {statusError = e.message;}
+   finally {
+    pollPromise = null; render();
+    if (ready && (!job || !terminal.has(job.status) || outputMore || statusError)) {
+     pollTimer = setTimeout(poll, 1000);
+    }
+   }
+  })();
+  return pollPromise;
+ }
+ async function reconcileAction() {
+  if (pollPromise) await pollPromise;
+  await poll();
+ }
+ function bindInitial(r) {
+  if (jobID || !r?.structuredContent?.id || !r.structuredContent.request) return;
+  jobID = r.structuredContent.id;
+  initial = null;
+  nonce = r._meta?.approval_nonce || '';
+  const saved = window.openai?.widgetState?.privateContent?.pcApproval;
+  if (saved?.id === jobID && saved.consumed === true) consumeApproval();
+  renderRequest(r.structuredContent); render();
+  void poll();
+ }
+ $('approve').onclick = async () => {
+  if ($('approve').disabled || !job || !nonce || action || approvalConsumed || job.status !== 'awaiting_approval') return;
+  const approvalNonce = nonce;
+  consumeApproval(); action = 'approve'; clearTimeout(pollTimer); render();
+  try {
+   await PC.tool('pc_approve_run', {id: jobID, approval_nonce: approvalNonce});
+  } catch (e) {
+   approvalError = 'Запуск не состоялся: ' + e.message + '. Повторный запуск из этой карточки заблокирован.';
+  }
+  action = ''; render(); await reconcileAction();
+ };
+ async function stop(name, args) {
+  if (!isRunning() || action || !ready) return;
+  action = 'cancel'; clearTimeout(pollTimer); render();
+  try {await PC.tool(name, args);} catch (e) {statusError = e.message;}
+  action = ''; render(); await reconcileAction();
+ }
+ $('cancel').onclick = () => stop('pc_cancel_job', {id: jobID});
+ $('stop-all').onclick = () => stop('pc_cancel_all_jobs', {});
+ PC.onTeardown(() => {ready = false; clearTimeout(pollTimer); renderButtons();});
+ PC.onResult(r => {
+  if (jobID || !r?.structuredContent?.id || !r.structuredContent.request) return;
+  if (ready) bindInitial(r); else if (!initial) initial = r;
+ });
+ try {await PC.ready(); ready = true; if (initial) bindInitial(initial);}
+ catch (e) {status(e.message, true);}
 })();
 </script></html>
