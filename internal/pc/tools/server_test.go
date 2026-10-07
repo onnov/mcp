@@ -121,7 +121,7 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 		if e != nil {
 			t.Fatal("approval resource unavailable", uri, e)
 		}
-		if len(resource.Contents) != 1 || resource.Contents[0].URI != uri || resource.Contents[0].MIMEType != ui.MIMEType || resource.Contents[0].Text != ui.Approval || !strings.Contains(resource.Contents[0].Text, "Подтверждение принято. Запускаю команду") || !strings.Contains(resource.Contents[0].Text, "pc_job_output") {
+		if len(resource.Contents) != 1 || resource.Contents[0].URI != uri || resource.Contents[0].MIMEType != ui.MIMEType || resource.Contents[0].Text != ui.Approval || !strings.Contains(resource.Contents[0].Text, "Ожидайте. Команда выполняется") || !strings.Contains(resource.Contents[0].Text, "pc_job_output") && strings.Contains(resource.Contents[0].Text, "approvalConsumed") {
 			t.Fatal("cached or current approval URI did not return the latest UI", uri)
 		}
 	}

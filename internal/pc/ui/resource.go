@@ -12,8 +12,8 @@ const PreviousPickerURI = "ui://pc-mcp/workspace-v2.html"
 // Keep serving this URI for connections that cached the original descriptor.
 // Updating tool metadata in ChatGPT and restarting the server are independent.
 const LegacyPickerURI = "ui://pc-mcp/workspace-v1.html"
-const ApprovalURI = "ui://pc-mcp/approve-v4.html"
-const PreviousApprovalURI = "ui://pc-mcp/approve-v2.html"
+const ApprovalURI = "ui://pc-mcp/approve-v5.html"
+const PreviousApprovalURI = "ui://pc-mcp/approve-v4.html"
 const LegacyApprovalURI = "ui://pc-mcp/approve-v1.html"
 const MIMEType = "text/html;profile=mcp-app"
 
