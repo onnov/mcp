@@ -107,3 +107,28 @@ func TestMiddleOutputPagination(t *testing.T) {
 		t.Fatal(p)
 	}
 }
+
+func TestCredentialGitCommandAllowlist(t *testing.T) {
+	for _, args := range [][]string{
+		{"git", "pull"},
+		{"git", "push", "origin", "main"},
+		{"git", "fetch"},
+		{"git", "clone", "git@github.com:owner/repo.git"},
+		{"git", "ls-remote", "origin"},
+	} {
+		if !allowedCredentialGit(args) {
+			t.Fatal("allowed credential git command rejected", args)
+		}
+	}
+	for _, args := range [][]string{
+		{"git"},
+		{"git", "-c", "core.sshCommand=sh"},
+		{"git", "hash-object", "/run/pc-mcp-ssh-key"},
+		{"git", "config", "--get", "remote.origin.url"},
+		{"bash", "-lc", "git pull"},
+	} {
+		if allowedCredentialGit(args) {
+			t.Fatal("unsafe credential git command accepted", args)
+		}
+	}
+}

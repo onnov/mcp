@@ -136,7 +136,7 @@
    : v.network_policy === 'public-proxy' ? 'через proxy, только публичные адреса'
    : 'через proxy; локальные адреса зависят от настроек оператора';
   $('policy').textContent = 'Назначение: ' + q.purpose + ' · сеть: ' + network + ' · лимит: ' + q.seconds
-   + ' сек.' + (q.credential ? ' · GitHub: доступ в пределах разрешений токена через серверный proxy' : '');
+   + ' сек.' + (q.credential ? ' · GitHub credentials: HTTPS token через server proxy или SSH key read-only для разрешённых Git-команд' : '');
  }
  function publishContext() {
   const rows = [...consoleRecords.values()];
