@@ -107,7 +107,7 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	if r := call("pc_open_workspace_picker", map[string]any{"path": "../outside"}); !r.IsError {
 		t.Fatal("picker escaped the allowed root")
 	}
-	for _, uri := range []string{ui.PickerURI, ui.PreviousPickerURI, ui.LegacyPickerURI} {
+	for _, uri := range []string{ui.PickerURI, ui.PreviousPickerURI, ui.OlderPickerURI, ui.OldestPickerURI, ui.LegacyPickerURI} {
 		resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
 		if e != nil {
 			t.Fatal("directory picker resource unavailable", uri, e)
@@ -116,12 +116,12 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 			t.Fatal("cached or current picker URI did not return the latest interactive UI", uri)
 		}
 	}
-	for _, uri := range []string{ui.ApprovalURI, ui.PreviousApprovalURI, ui.LegacyApprovalURI} {
+	for _, uri := range []string{ui.ApprovalURI, ui.PreviousApprovalURI, ui.OlderApprovalURI, ui.OldestApprovalURI, ui.EarlierApprovalURI, ui.LegacyApprovalURI} {
 		resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
 		if e != nil {
 			t.Fatal("approval resource unavailable", uri, e)
 		}
-		if len(resource.Contents) != 1 || resource.Contents[0].URI != uri || resource.Contents[0].MIMEType != ui.MIMEType || resource.Contents[0].Text != ui.Approval || !strings.Contains(resource.Contents[0].Text, "Ожидайте. Команда выполняется") || !strings.Contains(resource.Contents[0].Text, "pc_job_output") && strings.Contains(resource.Contents[0].Text, "approvalConsumed") {
+		if len(resource.Contents) != 1 || resource.Contents[0].URI != uri || resource.Contents[0].MIMEType != ui.MIMEType || resource.Contents[0].Text != ui.Approval || !strings.Contains(resource.Contents[0].Text, "Ожидайте. Команда выполняется") || !strings.Contains(resource.Contents[0].Text, "records_cursor") || strings.Contains(resource.Contents[0].Text, "PC.tool('pc_job_output'") || strings.Contains(resource.Contents[0].Text, "/*BRIDGE*/") {
 			t.Fatal("cached or current approval URI did not return the latest UI", uri)
 		}
 	}

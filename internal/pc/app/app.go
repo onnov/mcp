@@ -17,6 +17,7 @@ import (
 	"github.com/onnov/mcp/internal/pc/netproxy"
 	"github.com/onnov/mcp/internal/pc/sandbox"
 	"github.com/onnov/mcp/internal/pc/tools"
+	"github.com/onnov/mcp/internal/pc/ui"
 	"github.com/onnov/mcp/internal/pc/workspace"
 	tunnelclient "github.com/openai/tunnel-client"
 )
@@ -61,6 +62,9 @@ func Serve(ctx context.Context, cfg config.Config) error {
 		engine.TmpMaxBytes = 1 << 30
 	}
 	engine.Configure(cfg.Root)
+	capabilities := engine.Capabilities()
+	fmt.Fprintf(os.Stderr, "pc-mcp: server_version=%v ui_approval=%s ui_picker=%s\n",
+		capabilities["server_version"], ui.ApprovalURI, ui.PickerURI)
 	ws, e := workspace.New(cfg.Root, cfg.State, engine)
 	if e != nil {
 		return e

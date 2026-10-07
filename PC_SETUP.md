@@ -29,6 +29,9 @@ go build -o pc-mcp ./cmd/pc-mcp
 работающего сервера остановите его обычным способом. Длительные процессы
 плагина завершаются при остановке сервера.
 
+Lifecycle одноразового подтверждения, regression harness и проверка версии после
+restart: [PC_UI_LIFECYCLE.md](PC_UI_LIFECYCLE.md).
+
 Для подключения единственного владельца без ввода пароля можно явно задать
 `PC_MCP_OWNER_AUTH=client-secret` или `--owner-auth client-secret` при запуске.
 Настройку Client ID/Client Secret в ChatGPT сохраните: именно уникальный секрет
@@ -79,7 +82,7 @@ host key проверяется, SSH agent и home не монтируются �
 `PC_MCP_SOCKS5_PROXY` управляет исходящими SSH/OpenAI Tunnel соединениями.
 
 После обновления бинарника обновите подключение плагина в ChatGPT. Версия
-сервера 1.1.0 и resource URI обновлены; старые UI URI продолжают обслуживаться.
+сервера 1.1.5 и resource URI обновлены; старые UI URI продолжают обслуживаться.
 Сервер не может принудительно сбросить descriptor cache клиента. Если новые
 поля/инструменты отсутствуют, обновление подключения обязательно. Перезапуск
 отзывает in-memory OAuth grants и требует повторного входа.
@@ -110,11 +113,14 @@ project cache повторно используется без сети. Аль�
 не монтируется: тесты не получают скрытый доступ к home или host credentials.
 `make deps-pc` готовит host cache для сборки самого сервера, а не job cache.
 
-Запуск возвращает job ID. Poll `pc_job_status` с `after=output.cursor`;
-`pc_job_output` выдаёт страницы середины логов по sequence cursor (1..200 records).
-Retained middle logs: последние 1 MiB / 10000 records на job; `evicted` явно
-сообщает потерянные записи. Head/tail summary также ограничен 32 KiB/8 KiB.
-Оба потока всегда дренируются. History ограничена 50 jobs; restart её очищает.
+Запуск возвращает job ID. Основной контракт polling — `pc_job_status` с
+`after=output.records_cursor`: `output.records` возвращает следующую ограниченную
+порцию retained console output, `more` сообщает о продолжении, `evicted` — о
+потерянных до cursor записях. Это самодостаточный контракт для UI; отдельный
+`pc_job_output` остаётся необязательным API для клиентов, которым удобнее читать
+логи отдельно от status. Head/tail summary и `output.cursor` сохранены для обратной
+совместимости. Retained logs: последние 1 MiB / 10000 records на job. Оба потока
+всегда дренируются. History ограничена 50 jobs; restart её очищает.
 
 `pc_cancel_job` останавливает job и его descendants. `pc_cancel_all_jobs`
 останавливает все plugin jobs и отменяет pending approvals. Poll до terminal

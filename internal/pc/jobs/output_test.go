@@ -63,3 +63,38 @@ func TestChunkBoundaryDoesNotAddEmptyRecord(t *testing.T) {
 		t.Fatalf("synthetic empty record %+v", v)
 	}
 }
+
+func TestOutputViewRecordsPagination(t *testing.T) {
+	o := &Output{}
+	w := o.Writer("stdout")
+	for i := 1; i <= 450; i++ {
+		fmt.Fprintf(w, "line %d\n", i)
+	}
+	w.Close()
+
+	v1 := o.View(0, true)
+	if len(v1.Records) != 200 || v1.RecordsCursor != 200 || !v1.More || v1.Evicted != 0 {
+		t.Fatalf("first records page %+v", v1)
+	}
+	v2 := o.View(v1.RecordsCursor, true)
+	if len(v2.Records) != 200 || v2.Records[0].Sequence != 201 || v2.RecordsCursor != 400 || !v2.More {
+		t.Fatalf("second records page %+v", v2)
+	}
+	v3 := o.View(v2.RecordsCursor, true)
+	if len(v3.Records) != 50 || v3.Records[0].Sequence != 401 || v3.RecordsCursor != 450 || v3.More {
+		t.Fatalf("final records page %+v", v3)
+	}
+}
+
+func TestOutputViewReportsEviction(t *testing.T) {
+	o := &Output{}
+	w := o.Writer("stdout")
+	for i := 1; i <= 10050; i++ {
+		fmt.Fprintf(w, "line %d\n", i)
+	}
+	w.Close()
+	v := o.View(0, true)
+	if v.Evicted != 50 || len(v.Records) == 0 || v.Records[0].Sequence != 51 || !v.More {
+		t.Fatalf("eviction contract %+v", v)
+	}
+}

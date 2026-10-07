@@ -5,7 +5,7 @@ build:
 
 test:
 	go test -race ./...
-	node --test internal/ui/picker_test.cjs internal/pc/ui/cards_test.cjs
+	node --test internal/ui/picker_test.cjs internal/pc/ui/cards_test.cjs internal/pc/ui/lifecycle_test.cjs
 
 check: test
 	go vet ./...
@@ -31,7 +31,7 @@ install-pc: build-pc
 
 check-pc:
 	go test -race ./internal/pc/...
-	node --test internal/pc/ui/cards_test.cjs
+	node --test internal/pc/ui/cards_test.cjs internal/pc/ui/lifecycle_test.cjs
 	go vet ./internal/pc/...
 	@test -z "$$(gofmt -l internal/pc)"
 
@@ -46,3 +46,8 @@ test-pc-resources:
 	systemd-run --user --scope --quiet --property=Delegate=yes \
 	  env PC_MCP_REQUIRE_RESOURCES=1 "$$task_tmp/sandbox.test" \
 	  -test.run='TestRealCgroupLimits|TestRealResourceEnforcement' -test.v
+
+# Check the actual embedded HTML and real tools/call replies of the built server.
+.PHONY: check-pc-ui-binary
+check-pc-ui-binary: build-pc
+	PC_MCP_UI_TEST_BINARY="$(CURDIR)/pc-mcp" node --test internal/pc/ui/binary_lifecycle_test.cjs
