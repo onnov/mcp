@@ -90,7 +90,7 @@ OAuth всё равно нужен для права доступа. Secure MCP 
 | Подтверждение команд | `--confirm-commands`; network/credential jobs уже требуют отдельного подтверждения |
 | Ограничение исходящей сети | Default network disabled. `--allow-network` разрешает подтверждённые jobs через public HTTP(S) proxy, DNS/IP validation, 80/443, запрет private/loopback/link-local/reserved destinations |
 | LAN/VPN/localhost | `--allow-private-network` расширяет proxy; `--allow-host-network` + job `host_network:true` даёт прямой TCP/UDP. Включать по необходимости; host-network jobs не получают credential capability |
-| GitHub credentials | Fine-grained `PC_MCP_GH_TOKEN` только для нужных репозиториев; host-only injection в проверенный HTTPS GitHub host, job env содержит placeholder; hooks/fsmonitor отключены для credential jobs |
+| GitHub credentials | HTTPS: fine-grained `PC_MCP_GH_TOKEN` остаётся host-side и добавляется только для canonical GitHub HTTPS. SSH: только approved credential `git pull/push/fetch/clone/ls-remote`; `PC_MCP_SSH_KEY_FILE` и known_hosts монтируются read-only, egress ограничен `github.com:22`, protocols `ssh:https`; hooks/fsmonitor отключены |
 | HTTP perimeter | HTTPS, loopback listen, bounded sockets/request slots, Host/Origin/header/body/time limits; exact trusted proxy CIDRs, overwritten single X-Forwarded-For |
 | DDoS на внешнем канале | Hosting/WAF provider protection, per-IP requests/connections и timeouts на публичном proxy; пример `scripts/pc-proxy-nginx.conf.example`, Apache требует эквивалентных правил |
 | SSH tunnel | Проверенный known_hosts, private key 0600, remote bind localhost, GatewayPorts no, optional отдельный пользователь с PermitListen/remote-forwarding-only |

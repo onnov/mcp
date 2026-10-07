@@ -30,6 +30,7 @@ import (
 type Proxy struct {
 	Directory    string
 	AllowPrivate bool
+	AllowGitSSH  bool
 	Token        string
 	server       *http.Server
 	listener     net.Listener
@@ -43,12 +44,13 @@ type Proxy struct {
 	ctx          context.Context
 }
 
-func New(ctx context.Context, state string, allowPrivate bool, token string) (*Proxy, error) {
+func New(ctx context.Context, state string, allowPrivate bool, token string, gitSSH ...bool) (*Proxy, error) {
+	allowGitSSH := len(gitSSH) > 0 && gitSSH[0]
 	dir, err := os.MkdirTemp(state, "egress-")
 	if err != nil {
 		return nil, err
 	}
-	p := &Proxy{Directory: dir, AllowPrivate: allowPrivate, Token: token, slots: make(chan struct{}, 32), connections: map[net.Conn]bool{}, certificates: map[string]tls.Certificate{}}
+	p := &Proxy{Directory: dir, AllowPrivate: allowPrivate, AllowGitSSH: allowGitSSH, Token: token, slots: make(chan struct{}, 32), connections: map[net.Conn]bool{}, certificates: map[string]tls.Certificate{}}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	fail := func(err error) (*Proxy, error) { p.Close(); return nil, err }
 	if token != "" {
@@ -117,9 +119,11 @@ func (p *Proxy) dial(ctx context.Context, network, addr string) (net.Conn, error
 	if err != nil {
 		return nil, err
 	}
-	private := p.AllowPrivate && !(p.Token != "" && (strings.EqualFold(host, "github.com") || strings.EqualFold(host, "api.github.com") || strings.EqualFold(host, "uploads.github.com")))
-	if !private && port != "80" && port != "443" {
-		return nil, errors.New("public egress only permits ports 80 and 443")
+	github := strings.EqualFold(host, "github.com")
+	private := p.AllowPrivate && !(p.Token != "" && (github || strings.EqualFold(host, "api.github.com") || strings.EqualFold(host, "uploads.github.com")))
+	gitSSH := p.AllowGitSSH && github && port == "22"
+	if !private && !gitSSH && port != "80" && port != "443" {
+		return nil, errors.New("public egress destination or port is not permitted")
 	}
 	resolveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -251,10 +255,15 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	host := strings.ToLower(u.Hostname())
-	credential := p.Token != "" && (host == "github.com" || host == "api.github.com" || host == "uploads.github.com")
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	gitSSH := p.AllowGitSSH && host == "github.com" && port == "22"
+	credential := p.Token != "" && !gitSSH && port == "443" && (host == "github.com" || host == "api.github.com" || host == "uploads.github.com")
 	// Authenticate only canonical GitHub HTTPS, with public addresses even when
 	// the operator has opted into private development services.
-	if credential && u.Port() != "443" && u.Port() != "" {
+	if p.Token != "" && !gitSSH && (host == "github.com" || host == "api.github.com" || host == "uploads.github.com") && port != "443" {
 		http.Error(w, "GitHub HTTPS required", 403)
 		return
 	}

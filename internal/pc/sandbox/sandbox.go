@@ -41,6 +41,8 @@ type Engine struct {
 	AllowNetwork        bool
 	MaxSeconds          int
 	GHtoken             string
+	SSHKeyFile          string
+	SSHKnownHosts       string
 	State               string
 	HelperPath          string
 	HelperError         string
@@ -58,7 +60,7 @@ type Engine struct {
 }
 
 func (e *Engine) Capabilities() map[string]any {
-	m := map[string]any{"github_credentials_configured": e.GHtoken != "", "sandbox": "bubblewrap >= 0.12.0", "network_allowed": e.AllowNetwork, "max_seconds": e.MaxSeconds, "cpu_policy": "all available cores; no quota", "resource_isolation": e.RequireResources && e.ResourceError == "", "network_policy": "HTTP(S) proxy; public destinations only", "private_network_allowed": e.AllowPrivateNetwork, "host_network_allowed": e.AllowHostNetwork, "server_version": "1.1.5", "tool_schema_version": 5, "process_limit": e.MaxProcesses, "confirm_boundary": "commands have RW access to the checkout", "log_retention": "1 MiB / 10000 latest records per job"}
+	m := map[string]any{"github_credentials_configured": e.GHtoken != "", "github_ssh_credentials_configured": e.SSHKeyFile != "" && e.SSHKnownHosts != "", "sandbox": "bubblewrap >= 0.12.0", "network_allowed": e.AllowNetwork, "max_seconds": e.MaxSeconds, "cpu_policy": "all available cores; no quota", "resource_isolation": e.RequireResources && e.ResourceError == "", "network_policy": "HTTP(S) proxy; public destinations only", "private_network_allowed": e.AllowPrivateNetwork, "host_network_allowed": e.AllowHostNetwork, "server_version": "1.1.6", "tool_schema_version": 5, "process_limit": e.MaxProcesses, "confirm_boundary": "commands have RW access to the checkout", "log_retention": "1 MiB / 10000 latest records per job"}
 	for _, name := range []string{"git", "gh", "go", "python3", "node", "bwrap"} {
 		p, err := exec.LookPath(name)
 		if err == nil {
@@ -126,6 +128,18 @@ func (e *Engine) Run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 	}
 	if s.Credential && !s.Network {
 		return errors.New("GitHub authentication requires a network job")
+	}
+	if s.Credential && len(s.Args) > 0 {
+		switch s.Args[0] {
+		case "git":
+			if e.GHtoken == "" && (e.SSHKeyFile == "" || e.SSHKnownHosts == "") {
+				return errors.New("no GitHub credentials configured for git")
+			}
+		case "gh":
+			if e.GHtoken == "" {
+				return errors.New("PC_MCP_GH_TOKEN is not configured")
+			}
+		}
 	}
 	if e.RequireResources && e.ResourceError != "" {
 		return errors.New("resource isolation unavailable: " + e.ResourceError)

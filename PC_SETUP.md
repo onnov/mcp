@@ -191,6 +191,14 @@ Per-job CA bundle публичный; private CA key/token в sandbox не мо�
 Credential approval разрешает job обращаться к GitHub в пределах token scopes;
 используйте fine-grained token с доступом только к нужным репозиториям.
 
+Для SSH remote (`git@github.com:...`) в transport `ssh` credential Git jobs могут
+использовать `PC_MCP_SSH_KEY_FILE` и `PC_MCP_SSH_KNOWN_HOSTS`. Они монтируются
+read-only только в подтверждённые `git pull/push/fetch/clone/ls-remote`; raw key
+доступен процессам внутри именно такого job, поэтому используйте отдельный GitHub
+ключ с минимальными правами. Исходящий SSH разрешён только к `github.com:22`
+через per-job proxy; `GIT_ALLOW_PROTOCOL=ssh:https`, hooks/fsmonitor отключены.
+Обычные jobs, shell-команды и `gh` SSH key не получают.
+
 ```json
 {"directory":"project","branch":"feature","args":["git","push","origin","feature"],"purpose":"git","network":true,"credential":true,"seconds":1800}
 ```

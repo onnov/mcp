@@ -93,6 +93,18 @@ func NeedsApproval(r Request) bool {
 	// The operator grants ordinary RW development execution to this single-owner plugin.
 	return r.Credential || r.Network || r.HostNetwork
 }
+func allowedCredentialGit(args []string) bool {
+	if len(args) < 2 || args[0] != "git" {
+		return false
+	}
+	switch args[1] {
+	case "pull", "push", "fetch", "clone", "ls-remote":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *Manager) NeedsApproval(r Request) bool                    { return m.ConfirmCommands || NeedsApproval(r) }
 func (m *Manager) Prepare(r Request) (View, string, error)         { return m.prepare(r, false) }
 func (m *Manager) PrepareApproval(r Request) (View, string, error) { return m.prepare(r, true) }
@@ -132,6 +144,9 @@ func (m *Manager) prepare(r Request, forceApproval bool) (View, string, error) {
 	}
 	if r.Credential && (len(r.Args) == 0 || (r.Args[0] != "gh" && r.Args[0] != "git")) {
 		return View{}, "", errors.New("credentials are only passed to explicit git/gh jobs, with user approval")
+	}
+	if r.Credential && r.Args[0] == "git" && !allowedCredentialGit(r.Args) {
+		return View{}, "", errors.New("credential git jobs are limited to pull, push, fetch, clone and ls-remote")
 	}
 	if len(r.Args) == 0 || len(r.Args) > 128 || r.Args[0] == "" {
 		return View{}, "", errors.New("args must contain 1..128 items")

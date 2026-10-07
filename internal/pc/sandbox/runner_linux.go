@@ -89,17 +89,40 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 		defer group.close()
 	}
 	var proxy *egress.Proxy
+	gitSSH := s.Credential && len(s.Args) > 0 && s.Args[0] == "git" && e.SSHKeyFile != "" && e.SSHKnownHosts != ""
 	if s.Network && !s.HostNetwork {
 		proxy, err = egress.New(ctx, e.State, e.AllowPrivateNetwork, func() string {
 			if s.Credential {
 				return e.GHtoken
 			}
 			return ""
-		}())
+		}(), gitSSH)
 		if err != nil {
 			return err
 		}
 		defer proxy.Close()
+		if gitSSH {
+			passwd := fmt.Sprintf("pc:x:%d:%d:PC MCP:/home/pc:/bin/sh\n", os.Getuid(), os.Getgid())
+			group := fmt.Sprintf("pc:x:%d:\n", os.Getgid())
+			sshConfig := "Host github.com\n" +
+				"  HostName github.com\n" +
+				"  User git\n" +
+				"  IdentityFile /run/pc-mcp-ssh-key\n" +
+				"  IdentitiesOnly yes\n" +
+				"  UserKnownHostsFile /run/pc-mcp-ssh-known-hosts\n" +
+				"  StrictHostKeyChecking yes\n" +
+				"  BatchMode yes\n" +
+				"  ProxyCommand /usr/bin/nc -X connect -x 127.0.0.1:3128 %h %p\n" +
+				"Host *\n" +
+				"  BatchMode yes\n" +
+				"  IdentitiesOnly yes\n" +
+				"  ProxyCommand false\n"
+			for name, data := range map[string]string{"passwd": passwd, "group": group, "ssh_config": sshConfig} {
+				if err = os.WriteFile(filepath.Join(proxy.Directory, name), []byte(data), 0600); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	a := []string{"--die-with-parent", "--new-session", "--unshare-all", "--cap-drop", "ALL", "--clearenv"}
 	if s.HostNetwork {
@@ -118,7 +141,7 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 	if e.TmpMaxBytes > 0 {
 		a = append(a, "--size", strconv.FormatInt(e.TmpMaxBytes, 10))
 	}
-	a = append(a, "--tmpfs", "/tmp", "--dir", "/home", "--dir", "/home/pc", "--dir", "/etc")
+	a = append(a, "--tmpfs", "/tmp", "--dir", "/home", "--dir", "/home/pc", "--dir", "/etc", "--dir", "/run")
 	for _, p := range []string{"/etc/ssl/certs", "/etc/ssl/openssl.cnf", "/etc/alternatives", "/etc/ld.so.cache", "/etc/localtime"} {
 		if _, err := os.Stat(p); err == nil {
 			a = append(a, "--ro-bind", p, p)
@@ -140,6 +163,15 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 	vars := map[string]string{"PATH": path, "HOME": "/home/pc", "TMPDIR": "/tmp", "LANG": "C.UTF-8", "GOCACHE": "/cache/go-build", "GOMODCACHE": "/cache/go-mod", "GOPATH": "/cache/go", "GOTOOLCHAIN": "local", "GOTELEMETRY": "off", "XDG_CACHE_HOME": "/cache", "PIP_CACHE_DIR": "/cache/pip", "npm_config_cache": "/cache/npm", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0", "GH_CONFIG_DIR": "/home/pc/.config/gh", "GH_PROMPT_DISABLED": "1"}
 	if s.Network && !s.HostNetwork {
 		a = append(a, "--ro-bind", proxy.Directory, "/run/pc-mcp", "--ro-bind", e.HelperPath, "/pc-mcp-helper")
+		if gitSSH {
+			a = append(a,
+				"--ro-bind", e.SSHKeyFile, "/run/pc-mcp-ssh-key",
+				"--ro-bind", e.SSHKnownHosts, "/run/pc-mcp-ssh-known-hosts",
+				"--ro-bind", filepath.Join(proxy.Directory, "passwd"), "/etc/passwd",
+				"--ro-bind", filepath.Join(proxy.Directory, "group"), "/etc/group",
+				"--ro-bind", filepath.Join(proxy.Directory, "ssh_config"), "/run/pc-mcp-ssh-config",
+			)
+		}
 		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
 			vars[key] = "http://127.0.0.1:3128"
 		}
@@ -147,18 +179,21 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 		vars["no_proxy"] = ""
 	}
 	if s.Credential {
-		if e.GHtoken == "" {
-			return errors.New("PC_MCP_GH_TOKEN is not configured")
-		}
 		if s.Args[0] != "git" && s.Args[0] != "gh" {
 			return errors.New("credential jobs must invoke git or gh directly")
 		}
-		// Placeholder satisfies CLI login checks; the real token is added by the
-		// host proxy only for verified github.com/api.github.com HTTPS requests.
-		vars["GH_TOKEN"] = "pc-mcp-proxy-placeholder"
-		vars["GH_HOST"] = "github.com"
-		for _, key := range []string{"SSL_CERT_FILE", "GIT_SSL_CAINFO", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "npm_config_cafile"} {
-			vars[key] = "/run/pc-mcp/ca.pem"
+		vars["GIT_ALLOW_PROTOCOL"] = "ssh:https"
+		if e.GHtoken != "" {
+			// Placeholder satisfies CLI login checks; the real token is added by the
+			// host proxy only for verified github.com/api.github.com HTTPS requests.
+			vars["GH_TOKEN"] = "pc-mcp-proxy-placeholder"
+			vars["GH_HOST"] = "github.com"
+			for _, key := range []string{"SSL_CERT_FILE", "GIT_SSL_CAINFO", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "npm_config_cafile"} {
+				vars[key] = "/run/pc-mcp/ca.pem"
+			}
+		}
+		if gitSSH {
+			vars["GIT_SSH_COMMAND"] = "ssh -F /run/pc-mcp-ssh-config"
 		}
 		vars["GIT_CONFIG_COUNT"] = "4"
 		vars["GIT_CONFIG_KEY_0"] = "credential.helper"

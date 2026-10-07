@@ -55,7 +55,7 @@ func Serve(ctx context.Context, cfg config.Config) error {
 			fmt.Fprintln(os.Stderr, "pc-mcp: SOCKS5 proxy enabled; tunnel DNS is resolved by the proxy")
 		}
 	}
-	engine := &sandbox.Engine{Cache: cfg.State + "/cache", Toolchains: cfg.Toolchains, AllowNetwork: cfg.Network, MaxSeconds: cfg.MaxSeconds, GHtoken: os.Getenv("PC_MCP_GH_TOKEN"), State: cfg.State, RequireResources: true, CgroupRoot: cfg.CgroupRoot, MemoryReserve: cfg.MemoryReserveMiB << 20, MemoryMax: cfg.MemoryMaxMiB << 20, DiskReserve: cfg.DiskReserveMiB << 20, MaxProcesses: cfg.MaxProcesses, AllowPrivateNetwork: cfg.PrivateNetwork, AllowHostNetwork: cfg.HostNetwork}
+	engine := &sandbox.Engine{Cache: cfg.State + "/cache", Toolchains: cfg.Toolchains, AllowNetwork: cfg.Network, MaxSeconds: cfg.MaxSeconds, GHtoken: os.Getenv("PC_MCP_GH_TOKEN"), SSHKeyFile: cfg.SSH.KeyFile, SSHKnownHosts: cfg.SSH.KnownHosts, State: cfg.State, RequireResources: true, CgroupRoot: cfg.CgroupRoot, MemoryReserve: cfg.MemoryReserveMiB << 20, MemoryMax: cfg.MemoryMaxMiB << 20, DiskReserve: cfg.DiskReserveMiB << 20, MaxProcesses: cfg.MaxProcesses, AllowPrivateNetwork: cfg.PrivateNetwork, AllowHostNetwork: cfg.HostNetwork}
 	engine.BestEffortResources = cfg.ResourceMode != "strict"
 	engine.TmpMaxBytes = cfg.TmpMaxMiB << 20
 	if cfg.ResourceMode == "strict" && engine.TmpMaxBytes == 0 {
