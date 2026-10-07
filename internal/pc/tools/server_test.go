@@ -66,6 +66,12 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 				t.Fatal("directory browsing tool missing interactive picker", tool.Name)
 			}
 		}
+		if tool.Name == "pc_start_job" || tool.Name == "pc_request_run" {
+			meta := tool.Meta["ui"].(map[string]any)
+			if meta["resourceUri"] != ui.ApprovalURI || tool.Meta["openai/outputTemplate"] != ui.ApprovalURI {
+				t.Fatal("command tool missing current approval UI", tool.Name, meta["resourceUri"], tool.Meta["openai/outputTemplate"])
+			}
+		}
 	}
 	for _, name := range []string{"pc_list_directory", "pc_directory_tree"} {
 		r := call(name, map[string]any{"path": "AI"})
@@ -101,13 +107,22 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	if r := call("pc_open_workspace_picker", map[string]any{"path": "../outside"}); !r.IsError {
 		t.Fatal("picker escaped the allowed root")
 	}
-	for _, uri := range []string{ui.PickerURI, ui.LegacyPickerURI} {
+	for _, uri := range []string{ui.PickerURI, ui.PreviousPickerURI, ui.LegacyPickerURI} {
 		resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
 		if e != nil {
 			t.Fatal("directory picker resource unavailable", uri, e)
 		}
 		if len(resource.Contents) != 1 || resource.Contents[0].URI != uri || resource.Contents[0].MIMEType != ui.MIMEType || resource.Contents[0].Text != ui.Picker || !strings.Contains(resource.Contents[0].Text, `id="breadcrumbs"`) {
 			t.Fatal("cached or current picker URI did not return the latest interactive UI", uri)
+		}
+	}
+	for _, uri := range []string{ui.ApprovalURI, ui.PreviousApprovalURI, ui.LegacyApprovalURI} {
+		resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+		if e != nil {
+			t.Fatal("approval resource unavailable", uri, e)
+		}
+		if len(resource.Contents) != 1 || resource.Contents[0].URI != uri || resource.Contents[0].MIMEType != ui.MIMEType || resource.Contents[0].Text != ui.Approval || !strings.Contains(resource.Contents[0].Text, "Подтверждение принято. Запускаю команду") || !strings.Contains(resource.Contents[0].Text, "pc_job_output") {
+			t.Fatal("cached or current approval URI did not return the latest UI", uri)
 		}
 	}
 	r := call("pc_write_file", map[string]any{"directory": ".", "branch": "", "path": "a.txt", "text": "one", "expected_revision": "new"})
