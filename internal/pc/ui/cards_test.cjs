@@ -262,3 +262,20 @@ test('a card that never learns its chat key does not mint a new one', async t =>
   for (const args of seen) assert.equal(args.chat, 'none');
   h.destroy();
 });
+
+test('a choice in the picker reaches the model as authoritative for its chat', async t => {
+  const s = {available: true, session_bound: true, directory: 'AI/mcp', branch: 'dev', git: true, branches: ['dev', 'main'], dirty: false};
+  const target = {...s, directory: 'AI/srt', branch: 'main', branches: ['main']};
+  const h = harness(t, 'picker.html', {structuredContent: {selection: s}}, {
+    pc_list_directory: () => ({entries: [], next_offset: -1}),
+    pc_inspect_workspace: () => target,
+    pc_select_workspace: a => ({...target, branch: a.branch})
+  });
+  await until(() => h.tools('pc_list_directory').length === 1);
+  await h.get('candidate').onclick();
+  await h.get('apply').onclick();
+  const last = h.calls.filter(c => c.method === 'ui/update-model-context').pop();
+  assert.equal(last.params.structuredContent.pcWorkspace.chosenInCard, true);
+  assert.equal(last.params.structuredContent.pcWorkspace.directory, 'AI/srt');
+  assert.match(last.params.content[0].text, /call pc_select_workspace with exactly these values/);
+});

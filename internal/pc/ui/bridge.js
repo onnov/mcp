@@ -30,16 +30,22 @@
  // The first key wins: it comes from the model's own call that rendered this
  // card (tool input, then result). Later results cannot move the card to
  // another chat.
- function rememberKey(key) {
-  if (!chat && typeof key === 'string' && /^c_[0-9a-f]{32}$/.test(key)) chat = key;
+ let keySource = '';
+ const received = [];
+ function rememberKey(key, source) {
+  if (!chat && typeof key === 'string' && /^c_[0-9a-f]{32}$/.test(key)) {chat = key; keySource = source;}
  }
- function remember(result) {
-  rememberKey(result?._meta?.pc_chat);
-  rememberKey(result?.structuredContent?.chat);
+ function remember(result, source) {
+  rememberKey(result?._meta?.pc_chat, source + '._meta');
+  let data = result?.structuredContent;
+  // Some hosts pass only the text content; it is the same JSON.
+  if (!data) try {data = JSON.parse((result?.content || []).find(x => x.type === 'text')?.text || 'null');} catch (_) {}
+  rememberKey(data?.chat, source + '.chat');
+  rememberKey(data?.selection?.chat, source + '.selection.chat');
  }
  const waiters = new Set();
  function deliver(result) {
-  remember(result);
+  remember(result, 'tool-result');
   last = result;
   for (const fn of listeners) fn(result);
   for (const fn of waiters) fn();
@@ -64,7 +70,8 @@
    parent.postMessage({jsonrpc: '2.0', id: m.id, result: {}}, '*');
    return;
   }
-  if (!closed && m.method === 'ui/notifications/tool-input') rememberKey(m.params?.arguments?.chat);
+  if (m.method && received.length < 20) received.push(m.method);
+  if (!closed && m.method === 'ui/notifications/tool-input') rememberKey(m.params?.arguments?.chat, 'tool-input');
   if (!closed && m.method === 'ui/notifications/tool-result') deliver(m.params);
  });
  window.PC = {
@@ -75,7 +82,7 @@
    if (args.chat === undefined) args = {...args, chat: chat || 'none'};
    try {
     const result = await rpc('tools/call', {name, arguments: args});
-    remember(result);
+    remember(result, name);
     return decode(result);
    }
    catch (e) {
@@ -107,6 +114,13 @@
       ancestor_origins: Array.from(globalThis.location?.ancestorOrigins || []), window_name: window.name}}}).catch(() => {});
     } catch (_) {}
    }
+  },
+  // Operator diagnostics only: which host messages arrived and where the chat
+  // key came from. Never sends the key, arguments or tool results.
+  debug: (event, extra = {}) => {
+   if (!window.PC_DEBUG_CONTEXT) return;
+   rpc('tools/call', {name: 'pc_debug_client_context', arguments: {context: {
+    event, received: [...received], key_source: keySource || 'none', has_key: !!chat, ...extra}}}).catch(() => {});
   },
   // The model must keep using the chat key this card works in.
   context: async (data, text) => rpc('ui/update-model-context', {

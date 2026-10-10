@@ -127,3 +127,23 @@ func TestRequestLogSplitsTracesAndMasksCardContext(t *testing.T) {
 		t.Fatal("card referrer must keep host and tag path segments", text)
 	}
 }
+
+func TestRequestLogKeepsCardDiagnosticsReadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "requests.jsonl")
+	l, err := newRequestLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pc_debug_client_context","arguments":{"context":{"event":"apply","received":["ui/notifications/tool-input","ui/notifications/tool-result"],"key_source":"tool-input","has_key":true,"other":"c_0123456789abcdef0123456789abcdef"}}}}`
+	l.wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/mcp", strings.NewReader(body)))
+	raw, _ := os.ReadFile(path)
+	text := string(raw)
+	for _, want := range []string{`"event":"apply"`, `"ui/notifications/tool-input"`, `"key_source":"tool-input"`, `"has_key":true`} {
+		if !strings.Contains(text, want) {
+			t.Fatal("card diagnostics must stay readable", want, text)
+		}
+	}
+	if strings.Contains(text, "0123456789abcdef") {
+		t.Fatal("other card fields must stay masked", text)
+	}
+}

@@ -171,6 +171,26 @@ func (l *requestLog) keyValues(v string) any {
 	return out
 }
 
+// Card diagnostic fields are protocol facts (message names, where a key came
+// from, booleans), never identifiers or user data: they stay readable.
+var clearCardFields = map[string]bool{"event": true, "received": true, "key_source": true, "has_key": true, "has_result": true}
+
+func (l *requestLog) cardContext(v any) any {
+	fields, ok := v.(map[string]any)
+	if !ok {
+		return l.mask(v)
+	}
+	out := map[string]any{}
+	for k, item := range fields {
+		if clearCardFields[k] {
+			out[k] = item
+		} else {
+			out[k] = l.mask(item)
+		}
+	}
+	return out
+}
+
 func sortedKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -207,7 +227,7 @@ func (l *requestLog) rpcEntry(raw map[string]any) map[string]any {
 		if args, ok := params["arguments"].(map[string]any); ok {
 			entry["argument_keys"] = sortedKeys(args)
 			if entry["tool"] == tools.DebugContextTool {
-				entry["client_context"] = l.mask(args["context"])
+				entry["client_context"] = l.cardContext(args["context"])
 			}
 		}
 	case "resources/read":
