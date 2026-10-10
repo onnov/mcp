@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -43,12 +44,12 @@ func (s *Server) authorizeProblem(q url.Values) string {
 
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		oauthError(w, 405, "invalid_request")
+		oauthFail(w, r, 405, "invalid_request", "authorization endpoint accepts only GET")
 		return
 	}
 	q := r.URL.Query()
 	if problem := s.authorizeProblem(q); problem != "" {
-		jsonResponse(w, 400, map[string]string{"error": "invalid_request", "error_description": problem})
+		oauthFail(w, r, 400, "invalid_request", problem)
 		return
 	}
 	redirectURI := q.Get("redirect_uri")
@@ -90,33 +91,33 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) ownerLogin(w http.ResponseWriter, r *http.Request) {
 	if s.AuthMode == "client-secret" {
-		oauthError(w, 404, "invalid_request")
+		oauthFail(w, r, 404, "invalid_request", "owner password login is disabled in client-secret mode")
 		return
 	}
 	if r.Method != http.MethodPost {
-		oauthError(w, 405, "invalid_request")
+		oauthFail(w, r, 405, "invalid_request", "login form accepts only POST")
 		return
 	}
 	// Do not trust forwarding headers. The public origin is operator configured.
 	if r.Header.Get("Origin") != s.PublicURL {
-		oauthError(w, 403, "invalid_request")
+		oauthFail(w, r, 403, "invalid_request", "Origin header "+strconv.Quote(r.Header.Get("Origin"))+" does not match PC_MCP_PUBLIC_URL "+s.PublicURL+"; open the login page via that URL")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := r.ParseForm(); err != nil {
-		oauthError(w, 400, "invalid_request")
+		oauthFail(w, r, 400, "invalid_request", "cannot parse login form")
 		return
 	}
 	cookie, err := r.Cookie("__Host-pc-mcp-login")
 	if err != nil {
-		oauthError(w, 400, "invalid_request")
+		oauthFail(w, r, 400, "invalid_request", "login cookie missing: the browser did not keep the cookie from the login page; start the connection again in one browser tab without blocking cookies")
 		return
 	}
 	raw := r.PostForm.Get("request")
 	key := hash(raw)
 	p, err := s.openEnvelope(raw)
 	if err != nil || hash(cookie.Value) != p.Cookie {
-		oauthError(w, 400, "invalid_request")
+		oauthFail(w, r, 400, "invalid_request", "login form expired (10 minutes), was opened in another tab, or the server restarted; start the connection again from the chat")
 		return
 	}
 	s.mu.Lock()
@@ -124,7 +125,7 @@ func (s *Server) ownerLogin(w http.ResponseWriter, r *http.Request) {
 	_, used := s.consumed[key]
 	s.mu.Unlock()
 	if used {
-		oauthError(w, 400, "invalid_request")
+		oauthFail(w, r, 400, "invalid_request", "this login form was already used; start the connection again from the chat")
 		return
 	}
 
@@ -160,7 +161,7 @@ func (s *Server) ownerLogin(w http.ResponseWriter, r *http.Request) {
 	// Consume successful flows atomically; unauthenticated requests create no state.
 	if _, used := s.consumed[key]; used {
 		s.mu.Unlock()
-		oauthError(w, 400, "invalid_request")
+		oauthFail(w, r, 400, "invalid_request", "this login form was already used; start the connection again from the chat")
 		return
 	}
 	if len(s.codes) >= 100 || len(s.consumed) >= 1024 {

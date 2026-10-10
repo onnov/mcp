@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -142,6 +143,13 @@ func jsonResponse(w http.ResponseWriter, status int, body any) {
 func oauthError(w http.ResponseWriter, status int, message string) {
 	jsonResponse(w, status, map[string]string{"error": message})
 }
+
+// oauthFail explains a rejection to the browser or client and in the server
+// log, so the owner can see which step failed. Descriptions never hold secrets.
+func oauthFail(w http.ResponseWriter, r *http.Request, status int, code, description string) {
+	log.Printf("pc-mcp: OAuth %s %s rejected (%d %s): %s", r.Method, r.URL.Path, status, code, description)
+	jsonResponse(w, status, map[string]string{"error": code, "error_description": description})
+}
 func (s *Server) resource() string { return s.PublicURL + "/mcp" }
 func (s *Server) allowedRedirect(uri string) bool {
 	return uri == s.RedirectURI || slices.Contains(ClaudeRedirectURIs, uri)
@@ -179,7 +187,7 @@ func (s *Server) prune() {
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	metadata := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			oauthError(w, 405, "invalid_request")
+			oauthFail(w, r, 405, "invalid_request", "metadata accepts only GET")
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -189,7 +197,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", metadata)
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			oauthError(w, 405, "invalid_request")
+			oauthFail(w, r, 405, "invalid_request", "metadata accepts only GET")
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")

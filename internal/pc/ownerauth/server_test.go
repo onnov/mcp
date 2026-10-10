@@ -160,8 +160,8 @@ func TestLoginCSRFPasswordAndExpiry(t *testing.T) {
 			t.Fatal("unsafe login origin accepted", origin)
 		}
 	}
-	if w := request(h, "POST", "/oauth/login", f, map[string]string{"Origin": s.PublicURL}); w.Code != 400 {
-		t.Fatal("login without cookie accepted")
+	if w := request(h, "POST", "/oauth/login", f, map[string]string{"Origin": s.PublicURL}); w.Code != 400 || !strings.Contains(w.Body.String(), "login cookie missing") {
+		t.Fatal("login without cookie accepted or unexplained", w.Body.String())
 	}
 	f.Set("password", "incorrect-owner-password")
 	w := request(h, "POST", "/oauth/login", f, map[string]string{"Origin": s.PublicURL}, cookie)

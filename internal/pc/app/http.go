@@ -134,6 +134,7 @@ func serveHTTP(ctx context.Context, cfg config.Config, mcpServer *mcp.Server) er
 		go func() { sshDone <- tunnel.Run(runCtx, listener.Addr().String()) }()
 	}
 	fmt.Fprintf(os.Stderr, "pc-mcp: authenticated HTTP listening on %s; public endpoint %s/mcp\n", listener.Addr(), cfg.OAuth.PublicURL)
+	fmt.Fprintf(os.Stderr, "pc-mcp: OAuth client_id=%s; callbacks: %s\n", cfg.OAuth.ClientID, strings.Join(append([]string{cfg.OAuth.RedirectURI}, ownerauth.ClaudeRedirectURIs...), ", "))
 	var result error
 	httpStopped, sshStopped := false, false
 	select {
