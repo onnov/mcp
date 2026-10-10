@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/onnov/mcp/internal/pc/files"
@@ -131,8 +130,7 @@ func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Serve
 		return t
 	}
 	s := mcp.NewServer(&mcp.Implementation{Name: "pc-mcp", Title: "PC development workspace", Version: "1.2.0"}, &mcp.ServerOptions{Instructions: instructions, Capabilities: &mcp.ServerCapabilities{Extensions: map[string]any{"io.modelcontextprotocol/ui": map[string]any{}}}})
-	chats := &chatResolver{now: time.Now}
-	s.AddReceivingMiddleware(chats.middleware, bindMiddleware(ws))
+	s.AddReceivingMiddleware(chatMiddleware, bindMiddleware(ws))
 	picker := descriptor("pc_open_workspace_picker", "Use this when the user asks to show available PC directories, browse folders, show the directory tree, or choose/change a workspace. Opens an interactive file-manager card with folder navigation at any depth, search, remembered selection and a branch selector. Set path to dot to browse from root, or omit it to restore the last directory. Let the user choose in the card; do not substitute a prose list.", true)
 	uiTool(picker, ui.PickerURI)
 	picker.Title = "PC: каталог и ветка"
