@@ -181,6 +181,13 @@ type OutputPage struct {
 	TotalRecords int    `json:"total_records"`
 }
 
+func (o *Output) Snapshot() ([]Line, int, int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	rows := append([]Line(nil), o.ring...)
+	return rows, o.total, o.bytes
+}
+
 func (o *Output) Page(after, limit int) OutputPage {
 	o.mu.Lock()
 	defer o.mu.Unlock()

@@ -15,7 +15,7 @@ import (
 	"github.com/onnov/mcp/internal/pc/workspace"
 )
 
-const instructions = `Single-owner PC development plugin with RW execution in the selected Git checkout (or selected non-Git directory). Local commands can read/write/delete files, run tests/smoke/apps/scripts and local Git; purpose is descriptive metadata, never authorization. Use explicit directory and branch, inspect/select before editing, preserve dirty checkouts and read revisions before file writes. Commands from a subdirectory of a checkout see the entire checkout; inspect git_root and explain that boundary. Start user-authorized local commands with pc_start_job. Network/credentials or operator confirm-commands policy require pc_request_run's exact-command card; nonce is private app metadata. Do not ask again for an already authorized smoke/script run. Poll pc_job_status; its output.records stream is the primary bounded console contract. pc_job_output is optional for clients that want separate retained-log paging. Stop long-lived commands with pc_cancel_job or pc_cancel_all_jobs and poll until terminal. Jobs use all available CPU cores, isolated project caches and host memory/disk reserves. Network uses a public-egress proxy; custom clients must support HTTP(S)_PROXY. Private destinations require explicit operator policy. GitHub HTTPS tokens stay in a host-side proxy. Approved credential Git SSH jobs may receive the configured SSH private key and known_hosts as read-only mounts; SSH egress is restricted to github.com:22 and credential Git commands are allowlisted. No host home, SSH-agent, OAuth or tunnel-control credentials are mounted. Jobs on the same checkout may run concurrently and allow live file edits; branch transitions stay locked until every job exits. Concurrent command/IDE writes require care because revision checking of existing files is optimistic, not an atomic CAS. Report sandbox/resource setup failures without insecure fallbacks. Begin project selection with pc_open_workspace_picker; use path="." to browse the configured root or omit to restore selection. Show its interactive card instead of a prose project list.`
+const instructions = `Single-owner PC development plugin with RW execution in the selected Git checkout (or selected non-Git directory). Local commands can read/write/delete files, run tests/smoke/apps/scripts and local Git; purpose is descriptive metadata, never authorization. Workspace selection is chat-scoped when the client supplies _meta["openai/session"]. At the start of project work in a chat, call pc_get_workspace; if session_bound is false, immediately open pc_open_workspace_picker before any file mutation or command. The picker preselects the global last workspace and opening it binds that default to the chat, so closing it without interaction accepts the default; pc_select_workspace changes only that chat binding while also updating the global default for future chats. Use explicit directory and branch matching the chat binding, preserve dirty checkouts and read revisions before file writes. Commands from a subdirectory of a checkout see the entire checkout; inspect git_root and explain that boundary. Start user-authorized local commands with pc_start_job. Network/credentials or operator confirm-commands policy require pc_request_run's exact-command card; nonce is private app metadata. Do not ask again for an already authorized smoke/script run. Poll pc_job_status; its output.records stream is the primary bounded console contract. Drain all output.records pages through terminal state and include the command console output in the next chat response instead of leaving it only in the card; if retained output was evicted or model-context console was truncated, say so and fetch remaining retained pages when available. pc_job_output is optional for separate retained-log paging. pc_list_jobs is scoped to the current chat and merges live jobs with persisted history from the project's .pcctx directory, so command/output history survives server restarts. After completing a Git coding/editing task, call pc_git_change_summary with the explicit directory/branch and the task base (normally main), then report every created/modified/deleted file with additions/deletions and total +/-. Use + and - diff-style markers (or equivalent green/red UI where supported). Stop long-lived commands with pc_cancel_job or pc_cancel_all_jobs and poll until terminal. Jobs use all available CPU cores, isolated project caches and host memory/disk reserves. Network uses a public-egress proxy; custom clients must support HTTP(S)_PROXY. Private destinations require explicit operator policy. GitHub HTTPS tokens stay in a host-side proxy. Approved credential Git SSH jobs may receive the configured SSH private key and known_hosts as read-only mounts; SSH egress is restricted to github.com:22 and credential Git commands are allowlisted. No host home, SSH-agent, OAuth or tunnel-control credentials are mounted. Jobs on the same checkout may run concurrently and allow live file edits; branch transitions stay locked until every job exits. Concurrent command/IDE writes require care because revision checking of existing files is optimistic, not an atomic CAS. Report sandbox/resource setup failures without insecure fallbacks. Project context is stored under .pcctx in the Git root (or selected non-Git directory), automatically ignored via .gitignore and pruned when old job snapshots make it too large. Begin project selection with pc_get_workspace or pc_open_workspace_picker; use path="." to browse the configured root or omit to restore this chat's selection/default. Show the interactive card instead of a prose project list.`
 
 type Empty struct{}
 type PickerInput struct {
@@ -58,6 +58,10 @@ type DeleteInput struct {
 	FileInput
 	ExpectedRevision string `json:"expected_revision"`
 }
+type ChangeSummaryInput struct {
+	workspace.Target
+	Base string `json:"base,omitempty" jsonschema:"Git base ref for the task summary; defaults to main"`
+}
 type JobInput struct {
 	ID    string `json:"id"`
 	After int    `json:"after,omitempty"`
@@ -93,13 +97,13 @@ func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Serve
 		}
 		return t
 	}
-	s := mcp.NewServer(&mcp.Implementation{Name: "pc-mcp", Title: "PC development workspace", Version: "1.1.6"}, &mcp.ServerOptions{Instructions: instructions, Capabilities: &mcp.ServerCapabilities{Extensions: map[string]any{"io.modelcontextprotocol/ui": map[string]any{}}}})
+	s := mcp.NewServer(&mcp.Implementation{Name: "pc-mcp", Title: "PC development workspace", Version: "1.1.8"}, &mcp.ServerOptions{Instructions: instructions, Capabilities: &mcp.ServerCapabilities{Extensions: map[string]any{"io.modelcontextprotocol/ui": map[string]any{}}}})
 	picker := descriptor("pc_open_workspace_picker", "Use this when the user asks to show available PC directories, browse folders, show the directory tree, or choose/change a workspace. Opens an interactive file-manager card with folder navigation at any depth, search, remembered selection and a branch selector. Set path to dot to browse from root, or omit it to restore the last directory. Let the user choose in the card; do not substitute a prose list.", true)
 	uiTool(picker, ui.PickerURI)
 	picker.Title = "PC: каталог и ветка"
 	picker.Meta["openai/ui"] = map[string]any{"entrypoints": []map[string]string{{"type": "global"}, {"type": "thread"}}}
-	mcp.AddTool(s, picker, func(ctx context.Context, _ *mcp.CallToolRequest, in PickerInput) (*mcp.CallToolResult, Picker, error) {
-		selection, e := ws.Selection(ctx)
+	mcp.AddTool(s, picker, func(ctx context.Context, req *mcp.CallToolRequest, in PickerInput) (*mcp.CallToolResult, Picker, error) {
+		selection, e := ws.SessionSelection(ctx, requestSession(req), true)
 		if e != nil {
 			return nil, Picker{}, e
 		}
@@ -121,8 +125,8 @@ func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Serve
 		capabilities["approval_html_sha256"] = hex.EncodeToString(digest[:])
 		return nil, capabilities, nil
 	})
-	mcp.AddTool(s, descriptor("pc_get_workspace", "Get remembered directory and current actual branch. Does not switch branches.", true), func(ctx context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, workspace.Info, error) {
-		o, e := ws.Selection(ctx)
+	mcp.AddTool(s, descriptor("pc_get_workspace", "Get this chat's workspace binding. If session_bound is false, no workspace has been accepted for this chat yet; immediately open pc_open_workspace_picker. Does not switch branches.", true), func(ctx context.Context, req *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, workspace.Info, error) {
+		o, e := ws.SessionSelection(ctx, requestSession(req), false)
 		return nil, o, e
 	})
 	listing := descriptor("pc_list_directory", "List directories/files relative to configured root with pagination and render an interactive folder/branch picker. For a user asking to browse available projects prefer pc_open_workspace_picker. Symlinks are identified and never followed by the picker.", true)
@@ -141,31 +145,48 @@ func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Serve
 		o, e := ws.Inspect(ctx, in.Directory)
 		return nil, o, e
 	})
-	mcp.AddTool(s, descriptor("pc_select_workspace", "Remember directory; switch/create a local branch before editing. Blank branch keeps current. Refuses switching dirty checkouts or while jobs run.", false), func(ctx context.Context, _ *mcp.CallToolRequest, in Select) (*mcp.CallToolResult, workspace.Info, error) {
-		o, e := ws.Select(ctx, in.Target, in.Create, in.BaseBranch)
+	mcp.AddTool(s, descriptor("pc_select_workspace", "Bind directory/branch to the current chat and update the global default for future chats; switch/create a local branch before editing. Blank branch keeps current. Refuses switching dirty checkouts or while jobs run.", false), func(ctx context.Context, req *mcp.CallToolRequest, in Select) (*mcp.CallToolResult, workspace.Info, error) {
+		o, e := ws.SelectSession(ctx, requestSession(req), in.Target, in.Create, in.BaseBranch)
 		return nil, o, e
 	})
-	mcp.AddTool(s, descriptor("pc_read_file", "Read a regular file <=512 KiB and its SHA256 revision, relative to explicit project directory.", true), func(ctx context.Context, _ *mcp.CallToolRequest, in FileInput) (*mcp.CallToolResult, files.File, error) {
+	mcp.AddTool(s, descriptor("pc_read_file", "Read a regular file <=512 KiB and its SHA256 revision, relative to explicit project directory.", true), func(ctx context.Context, req *mcp.CallToolRequest, in FileInput) (*mcp.CallToolResult, files.File, error) {
+		if e := ws.ValidateSessionTarget(requestSession(req), in.Target); e != nil {
+			return nil, files.File{}, e
+		}
 		o, e := ws.Read(ctx, in.Target, in.Path)
 		return nil, o, e
 	})
-	mcp.AddTool(s, descriptor("pc_write_file", "Write/create file atomically; expected_revision from read_file or new. Creates parent folders; checks actual branch and rejects stale revisions.", false), func(ctx context.Context, _ *mcp.CallToolRequest, in WriteInput) (*mcp.CallToolResult, files.File, error) {
+	mcp.AddTool(s, descriptor("pc_write_file", "Write/create file atomically; expected_revision from read_file or new. Creates parent folders; checks actual branch and rejects stale revisions.", false), func(ctx context.Context, req *mcp.CallToolRequest, in WriteInput) (*mcp.CallToolResult, files.File, error) {
+		if e := ws.ValidateSessionTarget(requestSession(req), in.Target); e != nil {
+			return nil, files.File{}, e
+		}
 		o, e := ws.Write(ctx, in.Target, in.Path, in.Text, in.ExpectedRevision)
 		return nil, o, e
 	})
-	mcp.AddTool(s, descriptor("pc_delete_file", "Delete a regular file after checking its exact revision. No recursive deletion.", false), func(ctx context.Context, _ *mcp.CallToolRequest, in DeleteInput) (*mcp.CallToolResult, map[string]bool, error) {
+	mcp.AddTool(s, descriptor("pc_delete_file", "Delete a regular file after checking its exact revision. No recursive deletion.", false), func(ctx context.Context, req *mcp.CallToolRequest, in DeleteInput) (*mcp.CallToolResult, map[string]bool, error) {
+		if e := ws.ValidateSessionTarget(requestSession(req), in.Target); e != nil {
+			return nil, map[string]bool{"deleted": false}, e
+		}
 		e := ws.Remove(ctx, in.Target, in.Path, in.ExpectedRevision)
 		return nil, map[string]bool{"deleted": e == nil}, e
 	})
+	mcp.AddTool(s, descriptor("pc_git_change_summary", "Read-only Git task summary from the merge-base with base (default main) through the current working tree. Includes committed branch work, staged/unstaged tracked changes, untracked created files, per-file status and line additions/deletions plus totals. Call after coding/editing work before the final user-facing summary.", true), func(ctx context.Context, req *mcp.CallToolRequest, in ChangeSummaryInput) (*mcp.CallToolResult, workspace.ChangeSummary, error) {
+		if e := ws.ValidateSessionTarget(requestSession(req), in.Target); e != nil {
+			return nil, workspace.ChangeSummary{}, e
+		}
+		o, e := ws.ChangeSummary(ctx, in.Target, in.Base)
+		return nil, o, e
+	})
 	start := descriptor("pc_start_job", "Start asynchronous local development commands: build, test, smoke, app, scripts and local Git. Commands can read/write/delete project files; purpose is metadata. Network/credentials (or operator confirm-commands policy) use pc_request_run. Poll returned job ID; cancel when finished.", false)
 	uiTool(start, ui.ApprovalURI)
-	mcp.AddTool(s, start, func(ctx context.Context, _ *mcp.CallToolRequest, in jobs.Request) (*mcp.CallToolResult, jobs.View, error) {
+	mcp.AddTool(s, start, func(ctx context.Context, req *mcp.CallToolRequest, in jobs.Request) (*mcp.CallToolResult, jobs.View, error) {
 		if jm.NeedsApproval(in) {
 			return nil, jobs.View{}, errors.New("this command needs pc_request_run and user confirmation")
 		}
-		v, _, e := jm.Prepare(in)
+		session := requestSession(req)
+		v, _, e := jm.PrepareSession(session, in)
 		if e == nil {
-			v, e = jm.Start(ctx, v.ID, "")
+			v, e = jm.StartSession(ctx, session, v.ID, "")
 		}
 		return nil, v, e
 	})
@@ -173,40 +194,53 @@ func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Serve
 	uiTool(request, ui.ApprovalURI)
 	request.Annotations.DestructiveHint = boolptr(false)
 	request.Annotations.OpenWorldHint = boolptr(true)
-	mcp.AddTool(s, request, func(_ context.Context, _ *mcp.CallToolRequest, in jobs.Request) (*mcp.CallToolResult, jobs.View, error) {
-		v, nonce, e := jm.PrepareApproval(in)
+	mcp.AddTool(s, request, func(_ context.Context, req *mcp.CallToolRequest, in jobs.Request) (*mcp.CallToolResult, jobs.View, error) {
+		v, nonce, e := jm.PrepareApprovalSession(requestSession(req), in)
 		return &mcp.CallToolResult{Meta: mcp.Meta{"approval_nonce": nonce}}, v, e
 	})
 	approve := descriptor("pc_approve_run", "User confirmation card only. Submit the private one-use nonce from UI metadata.", false)
 	approve.Annotations.OpenWorldHint = boolptr(true)
 	approve.Meta["ui"] = map[string]any{"visibility": []string{"app"}}
 	approve.Meta["openai/widgetAccessible"] = true
-	mcp.AddTool(s, approve, func(ctx context.Context, _ *mcp.CallToolRequest, in ApproveInput) (*mcp.CallToolResult, jobs.View, error) {
-		v, e := jm.Start(ctx, in.ID, in.ApprovalNonce)
+	mcp.AddTool(s, approve, func(ctx context.Context, req *mcp.CallToolRequest, in ApproveInput) (*mcp.CallToolResult, jobs.View, error) {
+		v, e := jm.StartSession(ctx, requestSession(req), in.ID, in.ApprovalNonce)
 		return nil, v, e
 	})
-	mcp.AddTool(s, descriptor("pc_job_status", "Self-contained job status and console-output contract. Poll with after=previous output.records_cursor. output.records returns the next bounded retained console page with records_cursor/more/evicted; head/tail/cursor remain for compact backward compatibility. A UI must be able to render useful output without pc_job_output.", true), func(_ context.Context, _ *mcp.CallToolRequest, in JobInput) (*mcp.CallToolResult, jobs.View, error) {
-		v, e := jm.Get(in.ID, in.After)
+	mcp.AddTool(s, descriptor("pc_job_status", "Self-contained current-chat job status and console-output contract. Poll with after=previous output.records_cursor. Can read persisted terminal jobs from .pcctx after a server restart.", true), func(ctx context.Context, req *mcp.CallToolRequest, in JobInput) (*mcp.CallToolResult, jobs.View, error) {
+		session, target, e := sessionTarget(ctx, req, ws)
+		if e != nil {
+			return nil, jobs.View{}, e
+		}
+		v, e := jm.GetSession(session, target, in.ID, in.After)
 		return nil, v, e
 	})
-	mcp.AddTool(s, descriptor("pc_cancel_job", "Cancel pending/running job and kill the sandbox process group. Poll status until cancelled.", false), func(_ context.Context, _ *mcp.CallToolRequest, in JobInput) (*mcp.CallToolResult, jobs.View, error) {
-		v, e := jm.Cancel(in.ID)
+	mcp.AddTool(s, descriptor("pc_cancel_job", "Cancel a pending/running job belonging to the current chat and kill its sandbox process group. Poll status until cancelled.", false), func(_ context.Context, req *mcp.CallToolRequest, in JobInput) (*mcp.CallToolResult, jobs.View, error) {
+		v, e := jm.CancelSession(requestSession(req), in.ID)
 		return nil, v, e
 	})
-	mcp.AddTool(s, descriptor("pc_cancel_all_jobs", "Stop all plugin commands and descendants; invalidate all pending approvals. Poll returned IDs until terminal. Does not kill unrelated host processes.", false), func(_ context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, map[string]any, error) {
-		return nil, map[string]any{"jobs": jm.CancelAll()}, nil
+	mcp.AddTool(s, descriptor("pc_cancel_all_jobs", "Stop commands and pending approvals belonging to the current ChatGPT chat. Calls without openai/session keep legacy global stop-all behavior.", false), func(_ context.Context, req *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, map[string]any, error) {
+		return nil, map[string]any{"jobs": jm.CancelAllSession(requestSession(req))}, nil
 	})
-	mcp.AddTool(s, descriptor("pc_job_output", "Optional retained-output paging API for clients that want logs separately from status. pc_job_status already carries bounded incremental output.records. Bounded retention; reports any eviction. Limit 1..200.", true), func(_ context.Context, _ *mcp.CallToolRequest, in OutputInput) (*mcp.CallToolResult, jobs.OutputPage, error) {
-		v, e := jm.Output(in.ID, in.After, in.Limit)
+	mcp.AddTool(s, descriptor("pc_job_output", "Optional current-chat retained-output paging API, including persisted terminal logs from .pcctx. Limit 1..200.", true), func(ctx context.Context, req *mcp.CallToolRequest, in OutputInput) (*mcp.CallToolResult, jobs.OutputPage, error) {
+		session, target, e := sessionTarget(ctx, req, ws)
+		if e != nil {
+			return nil, jobs.OutputPage{}, e
+		}
+		v, e := jm.OutputSession(session, target, in.ID, in.After, in.Limit)
 		return nil, v, e
 	})
-	mcp.AddTool(s, descriptor("pc_list_jobs", "List bounded job history without console logs; jobs survive chats, not a server restart.", true), func(_ context.Context, _ *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, map[string]any, error) {
-		return nil, map[string]any{"jobs": jm.List()}, nil
+	mcp.AddTool(s, descriptor("pc_list_jobs", "List bounded command history for the current chat, merging live jobs with persisted .pcctx terminal history across server restarts.", true), func(ctx context.Context, req *mcp.CallToolRequest, _ Empty) (*mcp.CallToolResult, map[string]any, error) {
+		session, target, e := sessionTarget(ctx, req, ws)
+		if e != nil {
+			return nil, nil, e
+		}
+		rows, e := jm.ListSession(session, target)
+		return nil, map[string]any{"jobs": rows}, e
 	})
-	for _, r := range []struct{ uri, name, html string }{{ui.PickerURI, "workspace-picker", ui.Picker}, {ui.LegacyPickerURI, "workspace-picker-legacy", ui.Picker}, {ui.PreviousPickerURI, "workspace-picker-v4", ui.Picker}, {ui.OlderPickerURI, "workspace-picker-v3", ui.Picker}, {ui.OldestPickerURI, "workspace-picker-v2", ui.Picker}, {ui.ApprovalURI, "command-confirmation", ui.Approval}, {ui.PreviousApprovalURI, "command-confirmation-v7", ui.Approval}, {ui.OlderApprovalURI, "command-confirmation-v6", ui.Approval}, {ui.OldestApprovalURI, "command-confirmation-v5", ui.Approval}, {ui.EarlierApprovalURI, "command-confirmation-v4", ui.Approval}, {ui.LegacyApprovalURI, "command-confirmation-legacy", ui.Approval}} {
+	for _, r := range []struct{ uri, name, html string }{{ui.PickerURI, "workspace-picker", ui.Picker}, {ui.LegacyPickerURI, "workspace-picker-legacy", ui.Picker}, {ui.PreviousPickerURI, "workspace-picker-v6", ui.Picker}, {ui.OlderPickerURI, "workspace-picker-v5", ui.Picker}, {ui.OldestPickerURI, "workspace-picker-v4", ui.Picker}, {ui.ApprovalURI, "command-confirmation", ui.Approval}, {ui.PreviousApprovalURI, "command-confirmation-v10", ui.Approval}, {ui.OlderApprovalURI, "command-confirmation-v9", ui.Approval}, {ui.OldestApprovalURI, "command-confirmation-v8", ui.Approval}, {ui.EarlierApprovalURI, "command-confirmation-v7", ui.Approval}, {ui.LegacyApprovalURI, "command-confirmation-legacy", ui.Approval}} {
 		meta := mcp.Meta{"ui": map[string]any{"prefersBorder": true, "csp": map[string]any{"connectDomains": []string{}, "resourceDomains": []string{}}}, "openai/ui": map[string]any{"availableDisplayModes": []string{"inline", "fullscreen"}}}
 		if r.uri == ui.PickerURI || r.uri == ui.LegacyPickerURI || r.uri == ui.PreviousPickerURI || r.uri == ui.OlderPickerURI || r.uri == ui.OldestPickerURI {
-			meta["openai/widgetDescription"] = "Interactive PC workspace browser: open nested folders, use clickable ancestor breadcrumbs, filter names, select a directory and its current/existing/new Git branch. The last confirmed workspace is remembered. Let the user make their selection in this card."
+			meta["openai/widgetDescription"] = "Interactive PC workspace browser: open nested folders, use clickable ancestor breadcrumbs, filter names, select a directory and its current/existing/new Git branch. The selection is bound to the current chat; a new chat is prefilled from the global last workspace and can accept it by simply closing the card. Let the user change it in this card when needed."
 		}
 		s.AddResource(&mcp.Resource{URI: r.uri, Name: r.name, MIMEType: ui.MIMEType, Meta: meta}, func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: r.uri, MIMEType: ui.MIMEType, Text: r.html, Meta: meta}}}, nil

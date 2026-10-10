@@ -48,8 +48,8 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if len(list.Tools) != 18 {
-		t.Fatalf("expected 18 tools, got %d", len(list.Tools))
+	if len(list.Tools) != 19 {
+		t.Fatalf("expected 19 tools, got %d", len(list.Tools))
 	}
 	call := func(name string, args any) *mcp.CallToolResult {
 		t.Helper()
@@ -59,7 +59,22 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 		}
 		return r
 	}
+	callChat := func(chat, name string, args any) *mcp.CallToolResult {
+		t.Helper()
+		r, e := session.CallTool(ctx, &mcp.CallToolParams{Meta: mcp.Meta{"openai/session": chat}, Name: name, Arguments: args})
+		if e != nil {
+			t.Fatal(e)
+		}
+		return r
+	}
+	foundChangeSummary := false
 	for _, tool := range list.Tools {
+		if tool.Name == "pc_git_change_summary" {
+			foundChangeSummary = true
+			if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+				t.Fatal("change summary must be read-only")
+			}
+		}
 		if tool.Name == "pc_open_workspace_picker" || tool.Name == "pc_list_directory" || tool.Name == "pc_directory_tree" {
 			meta := tool.Meta["ui"].(map[string]any)
 			if meta["resourceUri"] != ui.PickerURI || tool.Meta["openai/outputTemplate"] != ui.PickerURI {
@@ -72,6 +87,9 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 				t.Fatal("command tool missing current approval UI", tool.Name, meta["resourceUri"], tool.Meta["openai/outputTemplate"])
 			}
 		}
+	}
+	if !foundChangeSummary {
+		t.Fatal("pc_git_change_summary missing")
 	}
 	for _, name := range []string{"pc_list_directory", "pc_directory_tree"} {
 		r := call(name, map[string]any{"path": "AI"})
@@ -106,6 +124,38 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	}
 	if r := call("pc_open_workspace_picker", map[string]any{"path": "../outside"}); !r.IsError {
 		t.Fatal("picker escaped the allowed root")
+	}
+	decodeInfo := func(r *mcp.CallToolResult) workspace.Info {
+		t.Helper()
+		b, _ := json.Marshal(r.StructuredContent)
+		var info workspace.Info
+		if e := json.Unmarshal(b, &info); e != nil {
+			t.Fatal(e)
+		}
+		return info
+	}
+	chatA := decodeInfo(callChat("chat-a", "pc_get_workspace", map[string]any{}))
+	if chatA.SessionBound {
+		t.Fatal("new chat must not inherit global workspace as an accepted binding", chatA)
+	}
+	boundResult := callChat("chat-a", "pc_open_workspace_picker", map[string]any{})
+	if boundResult.IsError {
+		t.Fatal(boundResult.Content)
+	}
+	bb, _ := json.Marshal(boundResult.StructuredContent)
+	var boundPicker Picker
+	if e := json.Unmarshal(bb, &boundPicker); e != nil {
+		t.Fatal(e)
+	}
+	if !boundPicker.Selection.SessionBound || boundPicker.Selection.Directory != deep {
+		t.Fatal("picker did not bind default workspace to chat-a", boundPicker.Selection)
+	}
+	chatB := decodeInfo(callChat("chat-b", "pc_get_workspace", map[string]any{}))
+	if chatB.SessionBound {
+		t.Fatal("chat-b inherited chat-a binding", chatB)
+	}
+	if r := callChat("chat-a", "pc_write_file", map[string]any{"directory": "AI", "branch": "", "path": "wrong.txt", "text": "x", "expected_revision": "new"}); !r.IsError {
+		t.Fatal("chat-scoped target guard accepted a different directory")
 	}
 	for _, uri := range []string{ui.PickerURI, ui.PreviousPickerURI, ui.OlderPickerURI, ui.OldestPickerURI, ui.LegacyPickerURI} {
 		resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})

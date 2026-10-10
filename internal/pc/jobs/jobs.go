@@ -40,6 +40,7 @@ type job struct {
 	created           time.Time
 	commandDirectory  string
 	networkPolicy     string
+	session           string
 }
 type View struct {
 	ExitCode         *int       `json:"exit_code,omitempty"`
@@ -105,10 +106,20 @@ func allowedCredentialGit(args []string) bool {
 	}
 }
 
-func (m *Manager) NeedsApproval(r Request) bool                    { return m.ConfirmCommands || NeedsApproval(r) }
-func (m *Manager) Prepare(r Request) (View, string, error)         { return m.prepare(r, false) }
-func (m *Manager) PrepareApproval(r Request) (View, string, error) { return m.prepare(r, true) }
-func (m *Manager) prepare(r Request, forceApproval bool) (View, string, error) {
+func (m *Manager) NeedsApproval(r Request) bool { return m.ConfirmCommands || NeedsApproval(r) }
+func (m *Manager) Prepare(r Request) (View, string, error) {
+	return m.prepare("", r, false)
+}
+func (m *Manager) PrepareApproval(r Request) (View, string, error) {
+	return m.prepare("", r, true)
+}
+func (m *Manager) PrepareSession(session string, r Request) (View, string, error) {
+	return m.prepare(session, r, false)
+}
+func (m *Manager) PrepareApprovalSession(session string, r Request) (View, string, error) {
+	return m.prepare(session, r, true)
+}
+func (m *Manager) prepare(session string, r Request, forceApproval bool) (View, string, error) {
 	if r.CWD == "" {
 		r.CWD = "."
 	}
@@ -154,6 +165,9 @@ func (m *Manager) prepare(r Request, forceApproval bool) (View, string, error) {
 	if r.Seconds < 1 || r.Seconds > m.maxSeconds {
 		return View{}, "", fmt.Errorf("seconds must be 1..%d", m.maxSeconds)
 	}
+	if err := m.ws.ValidateSessionTarget(session, r.Target); err != nil {
+		return View{}, "", err
+	}
 	boundary, err := m.ws.CommandBoundary(r.Target)
 	if err != nil {
 		return View{}, "", err
@@ -187,7 +201,7 @@ func (m *Manager) prepare(r Request, forceApproval bool) (View, string, error) {
 			return View{}, "", errors.New("job history full")
 		}
 	}
-	j := &job{ID: id(), Request: r, Status: "queued", out: &Output{}, created: time.Now(), commandDirectory: boundary, networkPolicy: policy}
+	j := &job{ID: id(), Request: r, Status: "queued", out: &Output{}, created: time.Now(), commandDirectory: boundary, networkPolicy: policy, session: session}
 	if forceApproval || m.NeedsApproval(r) {
 		j.Status = "awaiting_approval"
 		j.nonce = id()
@@ -196,6 +210,12 @@ func (m *Manager) prepare(r Request, forceApproval bool) (View, string, error) {
 	return m.view(j, 0), j.nonce, nil
 }
 func (m *Manager) Start(ctx context.Context, jobID, nonce string) (View, error) {
+	return m.start(ctx, "", jobID, nonce)
+}
+func (m *Manager) StartSession(ctx context.Context, session, jobID, nonce string) (View, error) {
+	return m.start(ctx, session, jobID, nonce)
+}
+func (m *Manager) start(ctx context.Context, session, jobID, nonce string) (View, error) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -219,6 +239,10 @@ func (m *Manager) Start(ctx context.Context, jobID, nonce string) (View, error) 
 	if j == nil {
 		m.mu.Unlock()
 		return View{}, errors.New("unknown job")
+	}
+	if j.session != session {
+		m.mu.Unlock()
+		return View{}, errors.New("job belongs to another chat session")
 	}
 	if j.Status != "queued" && j.Status != "awaiting_approval" {
 		m.mu.Unlock()
@@ -266,7 +290,6 @@ func (m *Manager) Start(ctx context.Context, jobID, nonce string) (View, error) 
 		er.Close()
 		release()
 		m.mu.Lock()
-		defer m.mu.Unlock()
 		j.Finished = time.Now()
 		j.Status = "succeeded"
 		code := 0
@@ -286,6 +309,10 @@ func (m *Manager) Start(ctx context.Context, jobID, nonce string) (View, error) 
 				j.Status = "timed_out"
 			}
 		}
+		p := snapshotJob(j)
+		jobSession := j.session
+		m.mu.Unlock()
+		_ = m.persistSnapshot(jobSession, p)
 	}()
 	return v, nil
 }

@@ -138,9 +138,23 @@
   $('policy').textContent = 'Назначение: ' + q.purpose + ' · сеть: ' + network + ' · лимит: ' + q.seconds
    + ' сек.' + (q.credential ? ' · GitHub credentials: HTTPS token через server proxy или SSH key read-only для разрешённых Git-команд' : '');
  }
+ function modelConsole(rows) {
+  const full = rows.slice().sort((a,b)=>a.sequence-b.sequence).map(l =>
+   String(l.sequence).padStart(5, '0') + ' [' + (l.stream === 'stderr' ? 'stderr' : 'stdout') + '] ' + l.text
+   + (l.truncated ? '  [fragment of long line]' : '')).join('\n');
+  const limit = 48000;
+  if (full.length <= limit) return {text: full, truncated: false};
+  const half = Math.floor((limit - 96) / 2);
+  return {text: full.slice(0, half) + '\n... console truncated for model context; full retained log is available via pc_job_status ...\n'
+   + full.slice(-half), truncated: true};
+ }
  function publishContext() {
   const rows = [...consoleRecords.values()];
+  const consoleView = modelConsole(rows);
+  const q = job.request || {};
   const data = {pcJob: {id: jobID, status: job.status, exitCode: job.exit_code,
+   command: q.args || [], directory: q.directory || '', branch: q.branch || '', cwd: q.cwd || '.',
+   console: consoleView.text, consoleTruncated: consoleView.truncated, evictedRecords: evicted,
    uiVersion: PC.version, outputSource: outputMode === 'records' ? 'pc_job_status.output.records' : 'pc_job_status.output.head/tail',
    renderedRecords: rows.length, renderedStdout: rows.filter(l => l.stream !== 'stderr').length,
    renderedStderr: rows.filter(l => l.stream === 'stderr').length,
@@ -148,8 +162,10 @@
   const key = JSON.stringify(data);
   if (key === lastContext) return;
   lastContext = key;
-  void PC.context(data, 'PC command job ' + jobID + ' is ' + job.status
-   + '. Do not start a duplicate job. Console output is included in pc_job_status.')
+  const terminalMessage = terminal.has(job.status)
+   ? '. Retained console is in pcJob.console. Include this console output in the next chat response; if consoleTruncated or evictedRecords is non-zero, say so and fetch retained pages when available.'
+   : '. Do not start a duplicate job. Continue polling pc_job_status.';
+  void PC.context(data, 'PC command job ' + jobID + ' is ' + job.status + terminalMessage)
    .catch(() => {});
  }
  async function poll() {
