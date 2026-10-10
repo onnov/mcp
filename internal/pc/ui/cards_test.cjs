@@ -7,6 +7,24 @@ test('missing private metadata fails closed',async t=>{const h=harness(t,'approv
 test('picker restores directory without switching branch; new branch selection is explicit',async t=>{const s={directory:'project',branch:'feature',git:true,branches:['main','feature'],dirty:false};const h=harness(t,'picker.html',{structuredContent:{selection:s}},{pc_list_directory:()=>({entries:[],next_offset:-1}),pc_inspect_workspace:()=>s,pc_select_workspace:a=>({...s,branch:a.branch})});await until(()=>h.get('saved').textContent.includes('project'));await until(()=>h.tools('pc_list_directory').length===1);assert.equal(h.tools('pc_select_workspace').length,0);await h.get('candidate').onclick();h.get('branch').value='__pc_new__';h.get('branch').onchange();h.get('new-branch').value='new-feature';await h.get('apply').onclick();const q=h.tools('pc_select_workspace')[0].params.arguments;assert.equal(q.directory,'project');assert.equal(q.branch,'new-feature');assert.equal(q.create,true);assert.equal(q.base_branch,'feature');assert.match(h.get('saved').textContent,/new-feature/)});
 test('non-Git remembered directory is published to the new chat',async t=>{const s={available:true,directory:'plain',branch:'',git:false,branches:[]};const h=harness(t,'picker.html',{structuredContent:{selection:s}},{pc_list_directory:()=>({entries:[],next_offset:-1})});await until(()=>h.calls.some(c=>c.method==='ui/update-model-context'));const c=h.calls.find(c=>c.method==='ui/update-model-context');assert.equal(c.params.structuredContent.pcWorkspace.directory,'plain');assert.equal(c.params.structuredContent.pcWorkspace.branch,'')});
 
+test('new chat accepts the prefilled workspace when picker opens without user interaction',async t=>{
+ const proposed={available:true,remembered:true,session_bound:false,directory:'project',branch:'main',git:true,branches:['main']};
+ const accepted={...proposed,session_bound:true};
+ const h=harness(t,'picker.html',{structuredContent:{entries:[],next_offset:-1},_meta:{pc_browser_path:'project'}},{
+  pc_get_workspace:()=>proposed,
+  pc_open_workspace_picker:()=>({selection:accepted,directories:{entries:[],next_offset:-1},browser_path:'project'}),
+  pc_list_directory:()=>({entries:[],next_offset:-1})
+ });
+ await until(()=>h.tools('pc_open_workspace_picker').length===1);
+ await until(()=>h.calls.some(c=>c.method==='ui/update-model-context'));
+ assert.equal(h.tools('pc_select_workspace').length,0,'accepting the prefilled workspace must not require an explicit apply');
+ assert.match(h.get('saved').textContent,/Этот чат: project · main/);
+ const c=h.calls.filter(x=>x.method==='ui/update-model-context').at(-1);
+ assert.equal(c.params.structuredContent.pcWorkspace.directory,'project');
+ assert.equal(c.params.structuredContent.pcWorkspace.branch,'main');
+ assert.equal(c.params.structuredContent.pcWorkspace.sessionBound,true);
+});
+
 test('directory listing opens a browser at the requested path and navigates beyond tree depth',async t=>{
  const remembered={available:true,remembered:true,directory:'WB/old-project',branch:'feature',git:true,branches:['feature']};
  let saved;
@@ -138,4 +156,20 @@ test('command card falls back to compact status output without pc_job_output',as
  assert.match(h.get('output').textContent,/00012 \[stderr\] last/);
  assert.match(h.get('metrics').textContent,/показаны начало\/конец; пропущено записей: 10/);
  assert.equal(h.get('status').classList?.contains?.('error')||false,false);
+});
+
+
+test('workspace command history can expand retained console output',async t=>{
+ const selected={available:true,remembered:true,directory:'project',branch:'main',git:true,branches:['main']};
+ const job={id:'history-job',status:'succeeded',request:{directory:'project',branch:'main',args:['go','test','./...']}};
+ const h=harness(t,'picker.html',{structuredContent:{selection:selected}},{pc_list_directory:()=>({entries:[],next_offset:-1}),pc_list_jobs:()=>({jobs:[job]}),pc_job_status:()=>({...job,exit_code:0,output:{records:[{sequence:1,stream:'stdout',text:'ok package'},{sequence:2,stream:'stderr',text:'warning'}],records_cursor:2,more:false,evicted:0}})});
+ await until(()=>h.get('jobs-refresh'));
+ await h.get('jobs-refresh').onclick();
+ const row=h.get('jobs').children[0];assert.ok(row);
+ const show=row.children.find(c=>c.textContent==='Показать вывод');assert.ok(show);
+ await show.onclick();
+ const pre=row.children.at(-1);assert.equal(pre.hidden,false);
+ assert.match(pre.textContent,/00001 \[stdout\] ok package/);
+ assert.match(pre.textContent,/00002 \[stderr\] warning/);
+ assert.equal(h.tools('pc_job_status').length,1);
 });

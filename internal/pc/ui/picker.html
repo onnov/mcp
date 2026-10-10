@@ -11,11 +11,12 @@ label{display:block;margin:12px 0 6px}nav{display:flex;gap:8px;align-items:cente
 #breadcrumbs{display:flex;gap:4px;align-items:center;flex-wrap:wrap}#location{margin:8px 0;overflow-wrap:anywhere}
 #rows{max-height:280px;overflow:auto;margin:8px 0}#rows button{display:block;width:100%;text-align:left;border:0}
 #rows button:hover{background:#8882}#message{margin:12px 0;white-space:pre-wrap}#saved{padding:10px;background:#8881;border-radius:8px}
+.job{margin:8px 0;padding:8px;border:1px solid #8884;border-radius:8px}.job-head{overflow-wrap:anywhere}.job pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto;background:#8881;padding:8px;border-radius:6px}
 small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus-visible{outline:2px solid #4587ff}
 </style>
 <h1>Рабочий каталог ПК</h1>
-<div id="saved">Загрузка последнего выбора…</div>
-<p><small>Откройте папку кликом. Переходите на любую глубину; путь сверху позволяет вернуться к родительской папке.</small></p>
+<div id="saved">Загрузка выбора для этого чата…</div>
+<p><small>Текущий выбор привязан к этому чату. Если предложенный каталог и ветка подходят, просто закройте карточку; чтобы изменить выбор, откройте нужную папку и подтвердите ветку.</small></p>
 <nav aria-label="Путь к каталогу"><button id="root">Корень</button><button id="up" aria-label="В родительский каталог">↑</button><span id="breadcrumbs"></span></nav>
 <div id="location"></div>
 <label for="search">Каталоги в открытой папке</label>
@@ -32,7 +33,7 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
   <small id="hint"></small>
   <p><button id="apply">Подтвердить каталог и ветку</button></p>
 </div>
-<p><button id="jobs-refresh">Задания</button> <button id="jobs-stop-all">Остановить все команды</button></p><div id="jobs"></div>
+<p><button id="jobs-refresh">История команд</button> <button id="jobs-stop-all">Остановить все команды</button></p><small>История команд и retained console сохраняются в .pcctx проекта и доступны после перезапуска pc-mcp.</small><div id="jobs"></div>
 <div id="message" role="status" aria-live="polite"></div>
 <script>/*BRIDGE*/</script>
 <script>
@@ -41,7 +42,7 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
  const $=id=>document.getElementById(id);
  let folder='.',candidate=null,next=-1,epoch=0,rows=[],busy=false,initial=null;
  const status=(text,error=false)=>{$('message').textContent=text;$('message').classList.toggle('error',error);PC.resize()};
- const context=async(s)=>PC.context({pcWorkspace:{directory:s.directory,branch:s.branch,command_directory:s.git_root||s.directory}},'PC workspace: directory='+s.directory+'; branch='+(s.branch||'(no Git)')+'. Use these explicit values for every operation.');
+ const context=async(s)=>PC.context({pcWorkspace:{directory:s.directory,branch:s.branch,command_directory:s.git_root||s.directory,sessionBound:s.session_bound===true}},'PC workspace for this chat: directory='+s.directory+'; branch='+(s.branch||'(no Git)')+'. Use these explicit values for every operation in this chat.');
  const lock=value=>{busy=value;for(const id of ['root','up','candidate','apply','more','branch','branch-search','new-branch'])$(id).disabled=value};
  function render(){
   const box=$('rows');box.replaceChildren();
@@ -98,16 +99,47 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
    const create=$('branch').value==='__pc_new__',branch=create?$('new-branch').value.trim():$('branch').value;
    if(create&&!branch)throw Error('Введите имя новой ветки');
    const selected=await PC.tool('pc_select_workspace',{directory:candidate.directory,branch,create,base_branch:candidate.branch||''});
-   candidate=selected;$('saved').textContent='Выбрано: '+selected.directory+' · '+(selected.branch||'без Git');branches();await context(selected);
-   status('Выбор сохранён. Опишите задачу в чате.');
+   candidate=selected;$('saved').textContent='Этот чат: '+selected.directory+' · '+(selected.branch||'без Git');branches();await context(selected);
+   status('Выбор для этого чата сохранён.');
   }catch(error){status(error.message,true)}finally{lock(false);render()}
  };
+ function formatConsoleRecord(l){return String(l.sequence).padStart(5,'0')+' ['+(l.stream==='stderr'?'stderr':'stdout')+'] '+l.text+(l.truncated?'  [фрагмент длинной строки]':'')}
+ async function loadJobConsole(job,pre,button){
+  if(!pre.hidden){pre.hidden=true;button.textContent='Показать вывод';PC.resize();return}
+  button.disabled=true;pre.hidden=false;pre.textContent='Загрузка retained console…';PC.resize();
+  try{
+   let after=0,records=[],evicted=0;
+   for(let page=0;page<1000;page++){
+    const v=await PC.tool('pc_job_status',{id:job.id,after});const out=v.output||{};
+    if(Array.isArray(out.records)){records.push(...out.records);evicted+=out.evicted||0;
+     const next=Number.isInteger(out.records_cursor)?out.records_cursor:after;
+     if(out.more!==true||next<=after)break;after=next;continue}
+    records.push(...(out.head||[]),...(out.tail||[]));break
+   }
+   const unique=new Map();for(const l of records)if(Number.isInteger(l.sequence))unique.set(l.sequence,l);
+   const rows=[...unique.values()].sort((a,b)=>a.sequence-b.sequence);
+   pre.textContent=(evicted?'[retained log evicted '+evicted+' older records]\n':'')+
+    (rows.length?rows.map(formatConsoleRecord).join('\n'):'(консольный вывод отсутствует)');
+   button.textContent='Скрыть вывод';
+  }catch(e){pre.textContent='Не удалось загрузить вывод: '+e.message;status(e.message,true)}
+  finally{button.disabled=false;PC.resize()}
+ }
  async function refreshJobs(){
   const result=await PC.tool('pc_list_jobs',{});const box=$('jobs');box.replaceChildren();
-  for(const job of result.jobs||[]){const row=document.createElement('div');row.textContent=job.status+' · '+job.request.directory+' · '+JSON.stringify(job.request.args).slice(0,160);if(['running','queued','awaiting_approval'].includes(job.status)){const button=document.createElement('button');button.textContent='Остановить';button.onclick=async()=>{try{await PC.tool('pc_cancel_job',{id:job.id});await refreshJobs();status('Остановка запрошена. Обновите задания для результата.')}catch(e){status(e.message,true)}};row.append(button)}box.append(row)}PC.resize()
+  for(const job of result.jobs||[]){
+   const row=document.createElement('div');row.className='job';
+   const head=document.createElement('div');head.className='job-head';
+   head.textContent=job.status+' · '+job.request.directory+' · '+JSON.stringify(job.request.args);row.append(head);
+   const output=document.createElement('button');output.textContent='Показать вывод';
+   const pre=document.createElement('pre');pre.hidden=true;output.onclick=()=>loadJobConsole(job,pre,output);row.append(output);
+   if(['running','queued','awaiting_approval'].includes(job.status)){const button=document.createElement('button');button.textContent='Остановить';button.onclick=async()=>{try{await PC.tool('pc_cancel_job',{id:job.id});await refreshJobs();status('Остановка запрошена. Обновите историю для результата.')}catch(e){status(e.message,true)}};row.append(button)}
+   row.append(pre);box.append(row)
+  }
+  if(!(result.jobs||[]).length){const empty=document.createElement('small');empty.textContent='В этой сессии pc-mcp команд ещё нет.';box.append(empty)}
+  PC.resize()
  }
  $('jobs-refresh').onclick=async()=>{try{await refreshJobs()}catch(e){status(e.message,true)}};
- $('jobs-stop-all').onclick=async()=>{try{await PC.tool('pc_cancel_all_jobs',{});await refreshJobs();status('Остановка всех команд запрошена.')}catch(e){status(e.message,true)}};
+ $('jobs-stop-all').onclick=async()=>{try{await PC.tool('pc_cancel_all_jobs',{});await refreshJobs();status('Остановка всех команд этого чата запрошена.')}catch(e){status(e.message,true)}};
  $('root').onclick=()=>navigate('.');
  $('up').onclick=()=>navigate(folder.includes('/')?folder.slice(0,folder.lastIndexOf('/')):'.');
  $('more').onclick=()=>{if(!busy)return load(true)};
@@ -117,10 +149,14 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
  try{
   await PC.ready();
   const data=initial?.structuredContent;
-  const selected=data?.selection||await PC.tool('pc_get_workspace');
-  $('saved').textContent=selected.remembered===false?'Выберите рабочий каталог.':'Последний каталог: '+selected.directory+' · '+(selected.branch||'без Git');
+  let selected=data?.selection||await PC.tool('pc_get_workspace');
+  if(selected.available!==false&&selected.session_bound===false){
+   const bound=await PC.tool('pc_open_workspace_picker',{});
+   selected=bound.selection||selected;
+  }
+  $('saved').textContent=selected.available===false?'Выберите рабочий каталог.':'Этот чат: '+selected.directory+' · '+(selected.branch||'без Git');
   if(selected.message)status(selected.message);
-  if(selected.available!==false&&selected.remembered!==false)await context(selected);
+  if(selected.available!==false&&selected.session_bound!==false)await context(selected);
   folder=initial?._meta?.pc_browser_path||data?.browser_path||(selected.available===false?'.':selected.directory||'.');
   await load();
  }catch(error){status(error.message,true);if(!busy)await navigate('.')}

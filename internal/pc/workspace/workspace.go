@@ -32,6 +32,7 @@ type Info struct {
 	Dirty              bool     `json:"dirty"`
 	GitRoot            string   `json:"git_root,omitempty"`
 	Message            string   `json:"message,omitempty"`
+	SessionBound       bool     `json:"session_bound"`
 }
 type persisted struct {
 	Root      string `json:"root"`
@@ -45,8 +46,10 @@ type Service struct {
 	mu              sync.Mutex
 	root            *os.Root
 	rootPath, state string
+	sessionsState   string
 	runner          sandbox.Runner
 	selected        Target
+	sessions        map[string]sessionBinding
 	busy            map[string]executionLease
 	remembered      bool
 }
@@ -56,7 +59,7 @@ func New(rootPath, state string, runner sandbox.Runner) (*Service, error) {
 	if e != nil {
 		return nil, e
 	}
-	s := &Service{root: r, rootPath: rootPath, state: filepath.Join(state, "selection.json"), runner: runner, selected: Target{Directory: "."}, busy: map[string]executionLease{}}
+	s := &Service{root: r, rootPath: rootPath, state: filepath.Join(state, "selection.json"), sessionsState: filepath.Join(state, "chat-workspaces.json"), runner: runner, selected: Target{Directory: "."}, sessions: map[string]sessionBinding{}, busy: map[string]executionLease{}}
 	b, e := os.ReadFile(s.state)
 	if e == nil {
 		var p persisted
@@ -69,6 +72,10 @@ func New(rootPath, state string, runner sandbox.Runner) (*Service, error) {
 			s.remembered = true
 		}
 	} else if !errors.Is(e, os.ErrNotExist) {
+		r.Close()
+		return nil, e
+	}
+	if e = s.loadSessions(); e != nil {
 		r.Close()
 		return nil, e
 	}
@@ -273,6 +280,7 @@ func (s *Service) Selection(ctx context.Context) (Info, error) {
 		return Info{Target: s.selected, Remembered: s.remembered, Message: "Saved workspace unavailable: " + e.Error()}, nil
 	}
 	out.Remembered = s.remembered
+	out.SessionBound = true
 	if out.Branch != s.selected.Branch {
 		out.Message = "Current branch changed since the previous selection. Confirm the displayed branch before editing."
 	}
@@ -337,6 +345,7 @@ func (s *Service) Select(ctx context.Context, t Target, create bool, base string
 	s.selected = out.Target
 	s.remembered = true
 	out.Remembered = true
+	out.SessionBound = true
 	data, _ := json.MarshalIndent(persisted{s.rootPath, s.selected}, "", "  ")
 	temp := s.state + ".tmp"
 	if e = os.WriteFile(temp, data, 0600); e == nil {

@@ -19,7 +19,7 @@
 Для существующего launcher с настройками и секретами в рабочем каталоге:
 
 ```bash
-# В текущем AI/mcp, ветка mcp/pc-ssh-proxy.
+# В текущем AI/mcp на ветке с нужными изменениями.
 gofmt -w internal/pc
 go build -o pc-mcp ./cmd/pc-mcp
 ./start_pc_mcp.sh
@@ -82,16 +82,28 @@ host key проверяется, SSH agent и home не монтируются �
 `PC_MCP_SOCKS5_PROXY` управляет исходящими SSH/OpenAI Tunnel соединениями.
 
 После обновления бинарника обновите подключение плагина в ChatGPT. Версия
-сервера 1.1.5 и resource URI обновлены; старые UI URI продолжают обслуживаться.
+сервера 1.1.8 и resource URI обновлены; старые UI URI продолжают обслуживаться.
 Сервер не может принудительно сбросить descriptor cache клиента. Если новые
 поля/инструменты отсутствуют, обновление подключения обязательно. Перезапуск
 отзывает in-memory OAuth grants и требует повторного входа.
 
 ## Рабочий процесс
 
-Выберите directory/branch в интерактивной карточке. Перед изменениями читайте
-ревизии; не переключайте dirty checkout автоматически. У каждой операции
-явные `directory` и `branch`; сохранённый выбор — только default для нового чата.
+В ChatGPT workspace привязан к конкретному разговору по
+`_meta["openai/session"]` — анонимному session ID, который клиент добавляет к
+tool calls. Сам ID в проект не записывается: для файлов контекста используется
+короткий SHA-256 key. Если у нового чата binding ещё нет, `pc_get_workspace`
+возвращает `session_bound:false`, после чего нужно сразу открыть
+`pc_open_workspace_picker`. Карточка уже заполнена последним глобальным
+directory/branch и при самом открытии принимает этот default для текущего чата:
+её можно просто закрыть. Изменение выбора через карточку меняет binding только
+этого чата и одновременно становится новым глобальным default для будущих чатов.
+
+Перед изменениями читайте ревизии; не переключайте dirty checkout автоматически.
+У каждой операции явные `directory` и `branch`, и сервер проверяет их против
+binding текущего чата. Поэтому два чата могут одновременно работать с разными
+проектами без перезаписи выбора друг друга. Клиенты без `openai/session`
+сохраняют прежнее глобальное поведение.
 
 `pc_start_job` запускает разрешённую пользователем локальную разработку,
 включая smoke, приложение, скрипт и local Git, без дополнительной карточки.
@@ -119,14 +131,55 @@ project cache повторно используется без сети. Аль�
 потерянных до cursor записях. Это самодостаточный контракт для UI; отдельный
 `pc_job_output` остаётся необязательным API для клиентов, которым удобнее читать
 логи отдельно от status. Head/tail summary и `output.cursor` сохранены для обратной
-совместимости. Retained logs: последние 1 MiB / 10000 records на job. Оба потока
-всегда дренируются. History ограничена 50 jobs; restart её очищает.
+совместимости. Retained console ограничен последними 1 MiB / 10000 records на
+job; оба потока всегда дренируются.
 
-`pc_cancel_job` останавливает job и его descendants. `pc_cancel_all_jobs`
-останавливает все plugin jobs и отменяет pending approvals. Poll до terminal
-status: ответ cancel — запрос остановки, не утверждение, что процессы уже умерли.
-Есть кнопки остановки в карточке запуска и в workspace picker. Несвязанные
-процессы владельца не затрагиваются. Exit/shutdown уничтожает все plugin jobs.
+Для каждого выбранного проекта pc-mcp создаёт скрытый каталог `.pcctx` в Git
+root (для non-Git — прямо в выбранном каталоге) и автоматически добавляет
+`.pcctx/` в `.gitignore`. Внутри хранится project-local контекст:
+
+```text
+.pcctx/
+  sessions/
+    <hashed-chat-key>/
+      session.json
+      jobs/
+        <job-id>.json
+```
+
+`session.json` фиксирует directory/branch текущего chat binding. Terminal job
+snapshot содержит argv/request, status, timestamps, exit code и retained
+stdout/stderr. Поэтому `pc_list_jobs`, `pc_job_status` и `pc_job_output`
+восстанавливают историю текущего чата и после restart сервера. Workspace-card
+показывает её через «История команд» / «Показать вывод». CI-style artifacts не
+создаются.
+
+Чтобы `.pcctx` не рос бесконечно, после записи terminal job выполняется
+project-level pruning. При размере job snapshots больше 64 MiB или количестве
+больше 200 удаляются самые старые snapshots, пока не останется не более 48 MiB
+и 150 jobs. Session metadata сохраняется. Внутренние каталоги `.pcctx`
+проверяются как реальные директории; symlink-подмена отклоняется.
+
+После terminal status карточка запуска публикует модели argv и console output,
+чтобы ассистент переносил консольный вывод в ответ чата, а не оставлял его только
+в UI. В model context передаётся до 48 KiB текста; если он усечён, выставляется
+`consoleTruncated`, а полный доступный retained log можно дочитать через
+`pc_job_status`. При eviction ассистент должен явно сообщить, что часть старого
+вывода уже недоступна.
+
+После coding/editing задачи `pc_git_change_summary` строит read-only итог от
+merge-base с указанным `base` (по умолчанию `main`) до текущего working tree.
+В итог входят коммиты feature-ветки, staged/unstaged tracked changes и untracked
+новые файлы. Ответ содержит статус каждого файла, additions/deletions и общие
+итоги; rename намеренно представлен как delete + create.
+
+`pc_cancel_job` останавливает job и его descendants. В ChatGPT
+`pc_cancel_all_jobs` ограничен текущим `openai/session`: один чат не останавливает
+jobs другого чата. Legacy-вызов без session ID сохраняет глобальный Stop all.
+Poll до terminal status: ответ cancel — запрос остановки, не утверждение, что
+процессы уже умерли. Есть кнопки остановки в карточке запуска и workspace picker.
+Несвязанные процессы владельца не затрагиваются. Exit/shutdown уничтожает все
+plugin jobs независимо от chat binding.
 
 До 4 jobs могут выполняться одновременно (`--max-jobs 1..16`), включая приложение
 и smoke/test в одном checkout. Команды с одинаковой областью делят execution lease;

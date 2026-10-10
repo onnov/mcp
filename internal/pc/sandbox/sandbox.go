@@ -60,7 +60,7 @@ type Engine struct {
 }
 
 func (e *Engine) Capabilities() map[string]any {
-	m := map[string]any{"github_credentials_configured": e.GHtoken != "", "github_ssh_credentials_configured": e.SSHKeyFile != "" && e.SSHKnownHosts != "", "sandbox": "bubblewrap >= 0.12.0", "network_allowed": e.AllowNetwork, "max_seconds": e.MaxSeconds, "cpu_policy": "all available cores; no quota", "resource_isolation": e.RequireResources && e.ResourceError == "", "network_policy": "HTTP(S) proxy; public destinations only", "private_network_allowed": e.AllowPrivateNetwork, "host_network_allowed": e.AllowHostNetwork, "server_version": "1.1.6", "tool_schema_version": 5, "process_limit": e.MaxProcesses, "confirm_boundary": "commands have RW access to the checkout", "log_retention": "1 MiB / 10000 latest records per job"}
+	m := map[string]any{"github_credentials_configured": e.GHtoken != "", "github_ssh_credentials_configured": e.SSHKeyFile != "" && e.SSHKnownHosts != "", "sandbox": "bubblewrap >= 0.12.0", "network_allowed": e.AllowNetwork, "max_seconds": e.MaxSeconds, "cpu_policy": "all available cores; no quota", "resource_isolation": e.RequireResources && e.ResourceError == "", "network_policy": "HTTP(S) proxy; public destinations only", "private_network_allowed": e.AllowPrivateNetwork, "host_network_allowed": e.AllowHostNetwork, "server_version": "1.1.8", "tool_schema_version": 6, "process_limit": e.MaxProcesses, "confirm_boundary": "commands have RW access to the checkout", "log_retention": "1 MiB / 10000 latest records per job; terminal history persisted in .pcctx with project pruning"}
 	for _, name := range []string{"git", "gh", "go", "python3", "node", "bwrap"} {
 		p, err := exec.LookPath(name)
 		if err == nil {

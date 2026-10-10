@@ -330,11 +330,15 @@ test('approval descriptor bypasses cached pre-records UI and renders both stream
   assert.equal(h.get('cancel').disabled, true);
   assert.equal(h.hasPoll(), false);
   const published = h.calls.filter(c => c.method === 'ui/update-model-context').at(-1).params.structuredContent.pcJob;
-  assert.equal(published.uiVersion, '1.1.6');
+  assert.equal(published.uiVersion, '1.1.8');
   assert.equal(published.outputSource, 'pc_job_status.output.records');
   assert.equal(published.renderedStdout, 1);
   assert.equal(published.renderedStderr, 1);
   assert.equal(published.renderedRecords, 2);
+  assert.deepEqual(published.command, initial.structuredContent.request.args);
+  assert.match(published.console, /cache-stdout/);
+  assert.match(published.console, /cache-stderr/);
+  assert.equal(published.consoleTruncated, false);
 });
 
 test('tools/call errors identify the failing tool and RPC without exposing private arguments', async t => {

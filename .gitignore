@@ -42,3 +42,4 @@
 *.log
 coverage*.out
 node_modules/
+.pcctx/
