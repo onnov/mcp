@@ -123,3 +123,58 @@ func TestChatKeyScopesClientsWithoutSessionMetadata(t *testing.T) {
 		t.Fatal("ChatGPT sessions must not receive chat keys", out, r.Meta)
 	}
 }
+
+// Reproduces the Claude log: the model passes its chat key, while a host-cached
+// old picker card calls pc_get_workspace and pc_select_workspace without one.
+func TestKeylessCardChoiceAppliesToChatThatOpenedPicker(t *testing.T) {
+	d := t.TempDir()
+	root, state := filepath.Join(d, "root"), filepath.Join(d, "state")
+	os.MkdirAll(filepath.Join(root, "AI", "mcp"), 0700)
+	os.MkdirAll(filepath.Join(root, "AI", "srt"), 0700)
+	os.Mkdir(state, 0700)
+	engine := &sandbox.Engine{MaxSeconds: 10}
+	ws, err := workspace.New(root, state, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	jm := jobs.New(ctx, ws, engine, 10)
+	defer jm.Close()
+	st, ct := mcp.NewInMemoryTransports()
+	go New(ws, jm).Run(ctx, st)
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "claude-ai", Version: "1"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	call := func(name string, args map[string]any) workspace.Info {
+		t.Helper()
+		r, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+		if err != nil || r.IsError {
+			t.Fatal(name, err, r)
+		}
+		var out workspace.Info
+		b, _ := json.Marshal(r.StructuredContent)
+		_ = json.Unmarshal(b, &out)
+		return out
+	}
+	other := call("pc_get_workspace", map[string]any{}).Chat
+	call("pc_select_workspace", map[string]any{"chat": other, "directory": "AI/mcp", "branch": ""})
+	k := call("pc_get_workspace", map[string]any{}).Chat
+	call("pc_open_workspace_picker", map[string]any{"chat": k})
+
+	call("pc_get_workspace", map[string]any{}) // old card: no chat argument at all
+	call("pc_select_workspace", map[string]any{"directory": "AI/srt", "branch": "", "create": false, "base_branch": ""})
+	if got := call("pc_get_workspace", map[string]any{"chat": k}); got.Directory != "AI/srt" {
+		t.Fatal("the card's choice must change the chat that opened the picker", got.Directory)
+	}
+	if got := call("pc_get_workspace", map[string]any{"chat": other}); got.Directory != "AI/mcp" {
+		t.Fatal("the card's choice changed another chat", got.Directory)
+	}
+	call("pc_select_workspace", map[string]any{"chat": "none", "directory": "AI/mcp", "branch": ""})
+	if got := call("pc_get_workspace", map[string]any{"chat": k}); got.Directory != "AI/mcp" {
+		t.Fatal("a new card without a delivered key must also reach the rendering chat", got.Directory)
+	}
+}

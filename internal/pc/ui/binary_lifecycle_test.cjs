@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const {harness} = require('./host_harness.cjs');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn) {for(let i=0;i<1000;i++){if(fn())return;await pause(5);}throw Error('live UI timed out');}
-test('built 1.1.8 binary renders stdout and stderr via its embedded approval bridge', async t => {
+test('built 1.2.0 binary renders stdout and stderr via its embedded approval bridge', async t => {
  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'pc-live-bridge-'));
  const root=path.join(tmp,'root'), state=path.join(tmp,'state');fs.mkdirSync(root);
  const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.startsWith('PC_MCP_')&&!k.startsWith('CONTROL_PLANE_')));
@@ -26,10 +26,10 @@ test('built 1.1.8 binary renders stdout and stderr via its embedded approval bri
  });
  const call=(name,args={})=>rpc('tools/call',{name,arguments:args});
  const init=await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'binary-bridge-probe',version:'1'}});
- assert.equal(init.serverInfo.version,'1.1.8');
+ assert.equal(init.serverInfo.version,'1.2.0');
  server.stdin.write(JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized'})+'\n');
  const caps=(await call('pc_capabilities')).structuredContent;
- assert.equal(caps.server_version,'1.1.8');assert.equal(caps.tool_schema_version,6);
+ assert.equal(caps.server_version,'1.2.0');assert.equal(caps.tool_schema_version,7);
  const tools=await rpc('tools/list',{});
  const uri=tools.tools.find(x=>x.name==='pc_request_run')._meta.ui.resourceUri;
  assert.equal(uri,'ui://pc-mcp/approve-v13.html');assert.equal(caps.approval_uri,uri);
@@ -53,7 +53,7 @@ test('built 1.1.8 binary renders stdout and stderr via its embedded approval bri
  assert.match(h.get('output').textContent,/\[stdout\] PC_BINARY_DONE/);
  assert.equal(h.tools('pc_job_output').length,0);assert.equal(h.hasPoll(),false);
  const context=h.calls.filter(x=>x.method==='ui/update-model-context').at(-1).params.structuredContent.pcJob;
- assert.equal(context.uiVersion,'1.1.8');assert.equal(context.renderedRecords,3);
+ assert.equal(context.uiVersion,'1.2.0');assert.equal(context.renderedRecords,3);
  assert.equal(context.renderedStdout,2);assert.equal(context.renderedStderr,1);
  assert.deepEqual(context.command,initial.structuredContent.request.args);
  assert.match(context.console,/PC_BINARY_STDOUT/);assert.match(context.console,/PC_BINARY_STDERR/);

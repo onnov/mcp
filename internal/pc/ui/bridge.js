@@ -1,7 +1,7 @@
 /* MCP Apps bridge; private tool response metadata never enters model context. */
 (() => {
  'use strict';
- const version = '1.1.8';
+ const version = '1.2.0';
  const pending = new Map(), listeners = new Set(), teardownListeners = new Set();
  let serial = 0, last = null, lastHeight = 0, closed = false;
  // Server-issued chat key (clients without chat metadata, e.g. Claude): the

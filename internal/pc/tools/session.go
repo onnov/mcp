@@ -8,6 +8,8 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/onnov/mcp/internal/pc/workspace"
@@ -70,9 +72,25 @@ func issuesChat(tool string) bool {
 	return tool == "pc_get_workspace" || tool == "pc_open_workspace_picker"
 }
 
-// chatMiddleware resolves the chat key once per tool call and returns it in
-// the result metadata, where cards read it for their own tool calls.
-func chatMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
+// rendersPicker lists tools whose result is shown in the workspace picker card.
+func rendersPicker(tool string) bool {
+	return tool == "pc_open_workspace_picker" || tool == "pc_list_directory" || tool == "pc_directory_tree"
+}
+
+// cardChatTTL bounds how long a picker card's choice may be attributed to the
+// chat that rendered it when the card itself cannot name that chat.
+const cardChatTTL = 30 * time.Minute
+
+// chatResolver resolves the chat key once per tool call and returns it in the
+// result metadata, where cards read it for their own tool calls.
+type chatResolver struct {
+	mu         sync.Mutex
+	pickerChat string
+	pickerAt   time.Time
+	now        func() time.Time
+}
+
+func (c *chatResolver) middleware(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
 		req, ok := request.(*mcp.CallToolRequest)
 		if method != "tools/call" || !ok || req.Params == nil || openaiSession(req) != "" {
@@ -83,15 +101,28 @@ func chatMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 		}
 		_ = json.Unmarshal(req.Params.Arguments, &args)
 		chat := ""
-		if args.Chat == noChat {
-			// A card that never learned its chat key: shared session, no new key.
-			return next(ctx, method, request)
-		}
-		if chatKeyPattern.MatchString(args.Chat) {
+		switch {
+		case chatKeyPattern.MatchString(args.Chat):
 			chat = args.Chat
-		} else if args.Chat != "" {
+			if rendersPicker(req.Params.Name) {
+				c.mu.Lock()
+				c.pickerChat, c.pickerAt = chat, c.now()
+				c.mu.Unlock()
+			}
+		case req.Params.Name == "pc_select_workspace" && (args.Chat == "" || args.Chat == noChat):
+			// A picker card that cannot name its chat (a host-cached old card,
+			// or a host that did not deliver the key): apply the user's choice
+			// to the chat that most recently opened the picker.
+			c.mu.Lock()
+			if c.pickerChat != "" && c.now().Sub(c.pickerAt) < cardChatTTL {
+				chat = c.pickerChat
+			}
+			c.mu.Unlock()
+		case args.Chat == noChat:
+			// A card that never learned its chat key: shared session, no new key.
+		case args.Chat != "":
 			return nil, errors.New("invalid chat key; call pc_get_workspace without chat to get a new one")
-		} else if issuesChat(req.Params.Name) {
+		case issuesChat(req.Params.Name):
 			chat = newChatKey()
 		}
 		if chat == "" {
