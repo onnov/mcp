@@ -20,19 +20,40 @@ type SelectionResult struct {
 	Available   bool                  `json:"available"`
 	Message     string                `json:"message"`
 	Permissions github.Permissions    `json:"permissions"`
+	// SessionBound reports that the selection is this chat's own binding.
+	SessionBound bool `json:"session_bound"`
+	// Chat is the server-issued chat key for clients without chat metadata.
+	Chat string `json:"chat,omitempty"`
 }
 
+// Selection restores the user's last choice, used by calls without a chat.
 func (s *Service) Selection(ctx context.Context) (SelectionResult, error) {
+	return s.SessionSelection(ctx, "")
+}
+
+// SessionSelection restores this chat's repository and branch. Without a chat
+// session it restores the user's last choice.
+func (s *Service) SessionSelection(ctx context.Context, session string) (SelectionResult, error) {
 	var out SelectionResult
 	p, err := identity.Require(ctx)
 	if err != nil {
 		return out, err
 	}
 	v, ok := s.Preferences.Get(p.UserID)
+	if session != "" {
+		v, ok = s.Preferences.Chat(p.UserID, preferences.SessionKey(session))
+		out.SessionBound = ok
+	}
 	if !ok {
 		out.Message = "Select a repository to start"
 		return out, nil
 	}
+	return s.check(ctx, v, out)
+}
+
+// check confirms that a saved choice is still accessible. It never changes
+// preferences: a missing branch falls back to main/default for this answer only.
+func (s *Service) check(ctx context.Context, v preferences.Selection, out SelectionResult) (SelectionResult, error) {
 	r, err := s.GitHub.Repository(ctx, v.Owner, v.Repo)
 	if github.IsStatus(err, 404) || github.IsStatus(err, 403) {
 		out.Message = "The previous repository is no longer accessible; select another"
@@ -66,7 +87,21 @@ func (s *Service) Selection(ctx context.Context) (SelectionResult, error) {
 	return out, nil
 }
 
-func (s *Service) Select(ctx context.Context, owner, repo, branch string) (SelectionResult, error) {
+// BindDefault binds a chat that has no repository yet to the user's last
+// choice, so every chat works in a definite repository and branch from its
+// first call. It reports whether it created the binding.
+func (s *Service) BindDefault(ctx context.Context, session string) (bool, error) {
+	p := identity.From(ctx)
+	if session == "" || p == nil || p.UserID <= 0 {
+		return false, nil
+	}
+	_, created, err := s.Preferences.BindChat(p.UserID, preferences.SessionKey(session))
+	return created, err
+}
+
+// Select chooses a repository and branch. With a chat session it rebinds only
+// that chat; the choice also becomes the user's last choice for new chats.
+func (s *Service) Select(ctx context.Context, session, owner, repo, branch string) (SelectionResult, error) {
 	var out SelectionResult
 	p, err := identity.Require(ctx)
 	if err != nil {
@@ -105,18 +140,24 @@ func (s *Service) Select(ctx context.Context, owner, repo, branch string) (Selec
 	if v.Repo == "" {
 		v.Repo = repo
 	}
-	if err := s.Preferences.Set(p.UserID, v); err != nil {
+	if session == "" {
+		err = s.Preferences.Set(p.UserID, v)
+	} else {
+		err = s.Preferences.SetChat(p.UserID, preferences.SessionKey(session), v)
+	}
+	if err != nil {
 		return out, err
 	}
 	v, _ = s.Preferences.Get(p.UserID)
-	return SelectionResult{Selection: v, Available: true, Permissions: r.Permissions}, nil
+	return SelectionResult{Selection: v, Available: true, Permissions: r.Permissions, SessionBound: session != ""}, nil
 }
 
-// ResolveRead restores the last choice for read-only calls. Mutation tools always
-// require explicit owner/repo/branch so another chat cannot retarget a write.
-func (s *Service) ResolveRead(ctx context.Context, owner, repo, ref string) (string, string, string, error) {
+// ResolveRead restores this chat's choice (or the last choice without a chat)
+// for read-only calls. Mutation tools always require explicit owner/repo/branch
+// so a stale or foreign selection cannot retarget a write.
+func (s *Service) ResolveRead(ctx context.Context, session, owner, repo, ref string) (string, string, string, error) {
 	if owner == "" && repo == "" {
-		selection, err := s.Selection(ctx)
+		selection, err := s.SessionSelection(ctx, session)
 		if err != nil {
 			return "", "", "", err
 		}
@@ -132,7 +173,11 @@ func (s *Service) ResolveRead(ctx context.Context, owner, repo, ref string) (str
 			return "", "", "", err
 		}
 		if p := identity.From(ctx); p != nil && ref == "" {
-			if v, ok := s.Preferences.Get(p.UserID); ok && strings.EqualFold(v.Owner, owner) && strings.EqualFold(v.Repo, repo) {
+			v, ok := s.Preferences.Get(p.UserID)
+			if session != "" {
+				v, ok = s.Preferences.Chat(p.UserID, preferences.SessionKey(session))
+			}
+			if ok && strings.EqualFold(v.Owner, owner) && strings.EqualFold(v.Repo, repo) {
 				ref = v.Branch
 			}
 		}
@@ -146,9 +191,9 @@ type PickerResult struct {
 	Branches     github.BranchPage     `json:"branches"`
 }
 
-func (s *Service) Picker(ctx context.Context) (PickerResult, error) {
+func (s *Service) Picker(ctx context.Context, session string) (PickerResult, error) {
 	var out PickerResult
-	selection, err := s.Selection(ctx)
+	selection, err := s.SessionSelection(ctx, session)
 	if err != nil {
 		return out, err
 	}

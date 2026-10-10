@@ -36,7 +36,7 @@ func TestPKCECodeReplayRefreshRotationAndPrincipal(t *testing.T) {
 	a := testServer()
 	verifier := strings.Repeat("v", 43)
 	grant := &oauthGrant{UserID: 17, Login: "user", GitHubToken: "upstream-secret", Expires: time.Now().Add(time.Hour)}
-	a.codes[tokenHash("code")] = oauthCode{Grant: grant, Challenge: challenge(verifier), Expires: time.Now().Add(time.Minute)}
+	a.codes[tokenHash("code")] = oauthCode{Grant: grant, Challenge: challenge(verifier), RedirectURI: a.RedirectURI, Expires: time.Now().Add(time.Minute)}
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {"code"}, "redirect_uri": {a.RedirectURI}, "code_verifier": {strings.Repeat("x", 43)}}
 	if w := tokenRequest(a, form); w.Code != 400 {
 		t.Fatalf("bad verifier accepted: %d", w.Code)
@@ -128,7 +128,7 @@ func TestCallbackUsesImmutableUserIDAndEnforcesOptionalRestriction(t *testing.T)
 		t.Run(string(rune('a'+allowed)), func(t *testing.T) {
 			a := testServer()
 			a.AllowedUserID = allowed
-			a.pending[tokenHash("state")] = oauthPending{State: "chat-state", CookieHash: tokenHash("browser"), Challenge: "challenge", GitHubVerifier: "verifier", Expires: time.Now().Add(time.Minute)}
+			a.pending[tokenHash("state")] = oauthPending{State: "chat-state", RedirectURI: a.RedirectURI, CookieHash: tokenHash("browser"), Challenge: "challenge", GitHubVerifier: "verifier", Expires: time.Now().Add(time.Minute)}
 			a.GitHub.HTTP.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
 				body := `{"access_token":"gh-token","token_type":"bearer","scope":"repo,workflow"}`
 				if r.URL.Host == "api.github.com" {
@@ -159,5 +159,128 @@ func TestCallbackUsesImmutableUserIDAndEnforcesOptionalRestriction(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+// fakeGitHub answers the GitHub token exchange and /user lookups.
+func fakeGitHub(a *Server) {
+	a.GitHub.HTTP.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{"access_token":"gh-token","token_type":"bearer","scope":"repo,workflow"}`
+		if r.URL.Host == "api.github.com" {
+			body = `{"id":42,"login":"owner"}`
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+}
+
+func oauthBody(t *testing.T, w *httptest.ResponseRecorder) map[string]string {
+	t.Helper()
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("not JSON: %s", w.Body.String())
+	}
+	return body
+}
+
+// authorizeThrough runs /oauth/authorize and the GitHub callback for one
+// callback URI and returns the chat client's redirect.
+func authorizeThrough(t *testing.T, a *Server, redirectURI, verifier string) *url.URL {
+	t.Helper()
+	q := url.Values{"client_id": {a.ClientID}, "redirect_uri": {redirectURI}, "response_type": {"code"}, "state": {"chat-state"}, "resource": {a.ResourceURL}, "code_challenge": {challenge(verifier)}, "code_challenge_method": {"S256"}}
+	w := httptest.NewRecorder()
+	a.authorize(w, httptest.NewRequest("GET", "/oauth/authorize?"+q.Encode(), nil))
+	if w.Code != 302 {
+		t.Fatalf("authorize %s: %d %s", redirectURI, w.Code, w.Body.String())
+	}
+	toGitHub, _ := url.Parse(w.Header().Get("Location"))
+	cookie := w.Result().Cookies()[0]
+	r := httptest.NewRequest("GET", "/oauth/github/callback?state="+url.QueryEscape(toGitHub.Query().Get("state"))+"&code=gh-code", nil)
+	r.AddCookie(cookie)
+	w = httptest.NewRecorder()
+	a.githubCallback(w, r)
+	back, err := url.Parse(w.Header().Get("Location"))
+	if err != nil || back.Query().Get("code") == "" {
+		t.Fatalf("callback: %d %v", w.Code, w.Header())
+	}
+	return back
+}
+
+func TestClaudeFlowBindsCodeToItsCallback(t *testing.T) {
+	a := testServer()
+	fakeGitHub(a)
+	verifier := strings.Repeat("v", 43)
+	for _, claude := range ClaudeRedirectURIs {
+		back := authorizeThrough(t, a, claude, verifier)
+		if back.Scheme+"://"+back.Host+back.Path != claude || back.Query().Get("state") != "chat-state" {
+			t.Fatalf("redirected to %s, want %s", back, claude)
+		}
+		form := url.Values{"grant_type": {"authorization_code"}, "code": {back.Query().Get("code")}, "redirect_uri": {a.RedirectURI}, "code_verifier": {verifier}}
+		w := tokenRequest(a, form)
+		if w.Code != 400 || oauthBody(t, w)["error"] != "invalid_grant" || !strings.Contains(oauthBody(t, w)["error_description"], "redirect_uri") {
+			t.Fatalf("code exchanged with another callback: %d %s", w.Code, w.Body.String())
+		}
+		form.Set("redirect_uri", claude)
+		if w := tokenRequest(a, form); w.Code != 200 {
+			t.Fatalf("Claude exchange: %d %s", w.Code, w.Body.String())
+		}
+	}
+	// ChatGPT keeps working with the same client.
+	back := authorizeThrough(t, a, a.RedirectURI, verifier)
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {back.Query().Get("code")}, "redirect_uri": {ClaudeRedirectURIs[0]}, "code_verifier": {verifier}}
+	if w := tokenRequest(a, form); w.Code != 400 {
+		t.Fatal("ChatGPT code exchanged with a Claude callback")
+	}
+	form.Set("redirect_uri", a.RedirectURI)
+	if w := tokenRequest(a, form); w.Code != 200 {
+		t.Fatalf("ChatGPT exchange: %s", w.Body.String())
+	}
+	clients := map[string]int{}
+	for _, v := range a.access {
+		clients[v.Grant.Client]++
+	}
+	if clients["claude"] != 2 || clients["chatgpt"] != 1 {
+		t.Fatalf("grants not labelled by client: %v", clients)
+	}
+}
+
+func TestOAuthRejectionsExplainTheStep(t *testing.T) {
+	a := testServer()
+	base := url.Values{"client_id": {a.ClientID}, "redirect_uri": {ClaudeRedirectURIs[0]}, "response_type": {"code"}, "state": {"s"}, "resource": {a.ResourceURL}, "code_challenge": {challenge(strings.Repeat("v", 43))}, "code_challenge_method": {"S256"}}
+	with := func(key, value string) url.Values {
+		q := url.Values{}
+		for k, v := range base {
+			q[k] = v
+		}
+		q.Set(key, value)
+		return q
+	}
+	for _, tc := range []struct{ key, value, want string }{
+		{"client_id", "other", "client_id"},
+		{"redirect_uri", "https://attacker.example/cb", "redirect_uri"},
+		{"state", "", "state"},
+	} {
+		w := httptest.NewRecorder()
+		a.authorize(w, httptest.NewRequest("GET", "/oauth/authorize?"+with(tc.key, tc.value).Encode(), nil))
+		if w.Code != 400 || !strings.Contains(oauthBody(t, w)["error_description"], tc.want) {
+			t.Fatalf("%s: %d %s", tc.key, w.Code, w.Body.String())
+		}
+	}
+	// Errors after the callback is trusted go back to that callback.
+	w := httptest.NewRecorder()
+	a.authorize(w, httptest.NewRequest("GET", "/oauth/authorize?"+with("resource", "https://attacker.example/mcp").Encode(), nil))
+	back, _ := url.Parse(w.Header().Get("Location"))
+	if !strings.HasPrefix(back.String(), ClaudeRedirectURIs[0]) || back.Query().Get("error") != "invalid_target" || back.Query().Get("error_description") == "" {
+		t.Fatalf("resource error: %s", back)
+	}
+	f := url.Values{"grant_type": {"authorization_code"}, "client_id": {a.ClientID}, "client_secret": {"wrong"}, "resource": {a.ResourceURL}}
+	r := httptest.NewRequest("POST", "/oauth/token", strings.NewReader(f.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	a.token(w, r)
+	if w.Code != 401 || !strings.Contains(oauthBody(t, w)["error_description"], "MCP_CLIENT_SECRET") {
+		t.Fatalf("client error: %d %s", w.Code, w.Body.String())
+	}
+	if w := tokenRequest(a, url.Values{"grant_type": {"password"}}); oauthBody(t, w)["error_description"] == "" {
+		t.Fatal("grant_type error without description")
 	}
 }

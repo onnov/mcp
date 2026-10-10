@@ -127,9 +127,15 @@ func TestPickerMentionsAndSelectionThroughMCP(t *testing.T) {
 		t.Fatal("selection not saved by authenticated user ID")
 	}
 	call("open_repository_picker", map[string]any{})
-	resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: ui.URI})
-	if e != nil || len(resource.Contents) != 1 || !strings.Contains(resource.Contents[0].Text, "repo-search") {
-		t.Fatalf("picker resource: %v %+v", e, resource)
+	// The current card and the previous URI (cached by hosts) serve the same HTML.
+	for _, uri := range []string{ui.URI, ui.PreviousURI} {
+		resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+		if e != nil || len(resource.Contents) != 1 || resource.Contents[0].Text != ui.HTML || !strings.Contains(resource.Contents[0].Text, "repo-search") {
+			t.Fatalf("picker resource %s: %v %+v", uri, e, resource)
+		}
+	}
+	if _, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "ui://ghf/repository-picker-v0.html"}); e == nil {
+		t.Fatal("an older card than the previous one is still served")
 	}
 	mentions := call("search_repository_mentions", map[string]any{"query": ""})
 	data, _ := json.Marshal(mentions.StructuredContent)

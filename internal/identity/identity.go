@@ -12,6 +12,8 @@ type Principal struct {
 	UserID      int64
 	Login       string
 	Expires     time.Time
+	// Client is the chat client that obtained this grant: chatgpt or claude.
+	Client string
 }
 
 type contextKey struct{}

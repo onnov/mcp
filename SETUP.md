@@ -35,7 +35,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o github_public_mcp ./cmd/git
 | Пара | Источник | Использование |
 |---|---|---|
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | GitHub OAuth App | Сервер подключает аккаунт GitHub |
-| `MCP_CLIENT_ID` / `MCP_CLIENT_SECRET` | Вы задаёте сами | ChatGPT получает токены MCP-сервера |
+| `MCP_CLIENT_ID` / `MCP_CLIENT_SECRET` | Вы задаёте сами | ChatGPT и Claude получают токены MCP-сервера |
 
 Client ID OAuth App не является числовым GitHub user ID. Пользователь входит в
 GitHub через браузер; сервер определяет ID через `/user`. GitHub password, PAT
@@ -68,6 +68,7 @@ GitHub OAuth App:
 | `MCP_ALLOW_DEFAULT_BRANCH_WRITES` | `false` по умолчанию |
 | `MCP_GOMAXPROCS` | `2`; ограничивает параллельное исполнение Go-кода, не число goroutines/OS threads |
 | `MCP_PUBLIC_HOST` | Дополнительный допустимый Host; обычно не нужен |
+| `MCP_DEBUG_REQUESTS` | `false`; `true` пишет диагностику запросов в `MCP_STATE_DIR/debug/mcp-requests.jsonl` |
 
 Без обоих GitHub credentials доступны только public read-only tools. Частично
 заданные credentials — ошибка запуска. OAuth требует HTTPS origin и MCP secret.
@@ -94,6 +95,46 @@ Endpoint: `https://mcp-msk.v02.ru/mcp`, authentication OAuth.
 Discovery публикует URLs и scope. Если форма пытается динамически регистрировать
 клиента, выберите режим с заданным Client ID/Secret. Не подставляйте GitHub OAuth
 endpoints в эту форму: они относятся к внутреннему шагу подключения GitHub.
+
+## Подключение в Claude
+
+Тот же сервер и та же пара `MCP_CLIENT_ID` / `MCP_CLIENT_SECRET` работают в Claude
+(claude.ai, Desktop, мобильные приложения). Отдельной настройки сервера не нужно:
+callback'и Claude `https://claude.ai/api/mcp/auth_callback` и
+`https://claude.com/api/mcp/auth_callback` разрешены вместе с ChatGPT callback
+из `MCP_REDIRECT_URI`. Код авторизации привязан к callback'у своего запроса.
+
+1. Settings → Connectors → Add custom connector.
+2. URL: `https://mcp-msk.v02.ru/mcp` (обязательно с `/mcp`).
+3. Откройте «Advanced settings» (или «Use your own OAuth client») и введите:
+   - OAuth Client ID: значение `MCP_CLIENT_ID`;
+   - OAuth Client Secret: значение `MCP_CLIENT_SECRET`.
+4. Connect → вход в GitHub → возврат в Claude.
+
+Dynamic Client Registration (DCR) и Client ID Metadata Documents (CIMD) не
+поддерживаются: без своих Client ID/Secret Claude не подключится.
+
+При старте сервер печатает в лог `client_id` и список разрешённых callback'ов.
+Каждый отказ OAuth возвращается с `error_description` (какой параметр или шаг
+не прошёл) и пишется в лог сервера строкой `github-mcp: OAuth ... rejected`.
+
+Claude кеширует список инструментов и HTML карточки. После обновления сервера,
+меняющего карточку, удалите коннектор в Claude и добавьте его заново.
+
+## Диагностика
+
+`MCP_DEBUG_REQUESTS=true` включает журнал запросов к `/mcp` в
+`MCP_STATE_DIR/debug/mcp-requests.jsonl` (права 0600, до 10 МиБ). Он показывает,
+какие идентификаторы присылает клиент (ChatGPT или Claude), не раскрывая их:
+
+- значения заголовков и `_meta` заменены HMAC-метками (одинаковые значения — одинаковые
+  метки в пределах одного запуска, восстановить значение нельзя);
+- `Authorization` и `Cookie` скрыты; `traceparent` разбит на `trace_id` и `span_id`;
+- у вызовов инструментов записываются только имена аргументов, без значений;
+- карточка выбора отправляет скрытый от модели инструмент `ghf_debug_client_context`:
+  какие сообщения хоста она получила и откуда взяла ключ чата (сам ключ не передаётся).
+
+Включайте только на время диагностики; после изменения переменной перезапустите сервер.
 
 ## Apache
 

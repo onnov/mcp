@@ -7,7 +7,7 @@ import (
 
 func clean(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"MCP_ADDR", "MCP_PUBLIC_HOST", "MCP_STATE_DIR", "MCP_PUBLIC_URL", "MCP_REDIRECT_URI", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "MCP_CLIENT_ID", "MCP_CLIENT_SECRET", "MCP_ALLOWED_USERS", "GITHUB_ALLOWED_USER_ID", "MCP_GOMAXPROCS", "MCP_ALLOW_DEFAULT_BRANCH_WRITES"} {
+	for _, key := range []string{"MCP_ADDR", "MCP_PUBLIC_HOST", "MCP_STATE_DIR", "MCP_PUBLIC_URL", "MCP_REDIRECT_URI", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "MCP_CLIENT_ID", "MCP_CLIENT_SECRET", "MCP_ALLOWED_USERS", "GITHUB_ALLOWED_USER_ID", "MCP_GOMAXPROCS", "MCP_ALLOW_DEFAULT_BRANCH_WRITES", "MCP_DEBUG_REQUESTS"} {
 		t.Setenv(key, "")
 	}
 }
@@ -48,5 +48,17 @@ func TestPartialCredentialsAndUnsafeCallbackRejected(t *testing.T) {
 	t.Setenv("MCP_REDIRECT_URI", "https://attacker.example/callback")
 	if _, e := Load(nil); e == nil {
 		t.Fatal("unsafe callback accepted")
+	}
+}
+
+func TestDebugRequestsFlag(t *testing.T) {
+	clean(t)
+	t.Setenv("MCP_DEBUG_REQUESTS", "true")
+	if c, e := Load(nil); e != nil || !c.DebugRequests {
+		t.Fatalf("MCP_DEBUG_REQUESTS ignored: %+v %v", c, e)
+	}
+	t.Setenv("MCP_DEBUG_REQUESTS", "maybe")
+	if _, e := Load(nil); e == nil {
+		t.Fatal("invalid MCP_DEBUG_REQUESTS accepted")
 	}
 }

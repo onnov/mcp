@@ -3,6 +3,8 @@ package preferences
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -91,5 +93,55 @@ func TestCorruptFileIsNotSilentlyReset(t *testing.T) {
 	}
 	if _, e := Open(dir); e == nil {
 		t.Fatal("corrupt preferences accepted")
+	}
+}
+
+func TestChatBindingsMigrationAndBounds(t *testing.T) {
+	dir := t.TempDir()
+	v2 := `{"version":2,"users":{"7":{"last":{"owner":"o","repo":"r","branch":"main","repository_id":5},"repositories":{"5":{"owner":"o","repo":"r","branch":"main","repository_id":5}}}}}`
+	if e := os.WriteFile(filepath.Join(dir, "selections.json"), []byte(v2), 0600); e != nil {
+		t.Fatal(e)
+	}
+	s, e := Open(dir)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, created, e := s.BindChat(8, SessionKey("chat:x")); created || e != nil {
+		t.Fatal("chat bound for a user without a last choice")
+	}
+	raw := "openai-session-secret-value"
+	if v, created, e := s.BindChat(7, SessionKey(raw)); !created || e != nil || v.Repo != "r" {
+		t.Fatalf("v2 last choice not used for a new chat: %+v %v %v", v, created, e)
+	}
+	if _, created, _ := s.BindChat(7, SessionKey(raw)); created {
+		t.Fatal("existing binding replaced")
+	}
+	if e := s.SetChat(7, SessionKey("other"), Selection{Owner: "o", Repo: "q", Branch: "dev", RepositoryID: 6}); e != nil {
+		t.Fatal(e)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "selections.json"))
+	if !strings.Contains(string(data), `"version": 3`) || strings.Contains(string(data), raw) {
+		t.Fatalf("file not migrated or holds a raw session: %s", data)
+	}
+	reopened, e := Open(dir)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if v, ok := reopened.Chat(7, SessionKey(raw)); !ok || v.Repo != "r" {
+		t.Fatal("chat binding lost on reopen")
+	}
+	if v, _ := reopened.Get(7); v.Repo != "q" {
+		t.Fatal("SetChat did not update the last choice")
+	}
+	for i := 0; i < maxChats+5; i++ {
+		if e := reopened.SetChat(7, SessionKey(strconv.Itoa(i)), Selection{Owner: "o", Repo: "q", Branch: "dev", RepositoryID: 6}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if n := len(reopened.users["7"].Chats); n != maxChats {
+		t.Fatalf("chat bindings not bounded: %d", n)
+	}
+	if _, ok := reopened.Chat(7, SessionKey(strconv.Itoa(maxChats+4))); !ok {
+		t.Fatal("newest binding evicted")
 	}
 }
