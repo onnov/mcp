@@ -30,11 +30,11 @@ function harness(t,options={}){
  };
  const parent={postMessage:async msg=>{
   calls.push(msg);if(msg.id===undefined)return;
-  try{let result={};if(msg.method==='tools/call'){const name=msg.params.name;const out=await (options[name]||defaults[name])(msg.params.arguments);result={structuredContent:out}};
+  try{let result={};if(msg.method==='tools/call'){const name=msg.params.name;const out=await (options[name]||defaults[name]||(()=>({})))(msg.params.arguments);result={structuredContent:out}};
    queueMicrotask(()=>receive({source:parent,data:{jsonrpc:'2.0',id:msg.id,result}}));
   }catch(error){queueMicrotask(()=>receive({source:parent,data:{jsonrpc:'2.0',id:msg.id,error:{message:error.message}}}))}
  }};
- const window={parent,addEventListener:(type,fn)=>{if(type==='message')receive=fn}};
+ const window={parent,addEventListener:(type,fn)=>{if(type==='message')receive=fn},GHF_DEBUG_CONTEXT:options.debug===true};
  // Host waits (3 s result settle, 60 s RPC timeout) run 100 times faster here.
  const scaled=ms=>ms>=1000?ms/100:ms;
  vm.runInNewContext(script,{document,window,Map,Set,JSON,Promise,Math,Error,Object,console,setTimeout:(fn,ms)=>{const id=setTimeout(()=>{timers.delete(id);fn()},scaled(ms));timers.add(id);return id},clearTimeout:id=>{timers.delete(id);clearTimeout(id)}});
@@ -114,4 +114,21 @@ test('without any key the card sends chat "none" and the model applies the choic
  assert.equal(h.toolCalls('select_repository')[0].params.arguments.chat,'none');
  const update=h.calls.filter(x=>x.method==='ui/update-model-context').at(-1).params;
  assert.equal(update.structuredContent.repositoryChosenInCard,true);assert.equal('chat' in update.structuredContent,false);
+});
+
+test('diagnostics report host messages and the key source, never the key',async t=>{
+ const h=harness(t,{debug:true});
+ await until(()=>h.calls.some(x=>x.method==='ui/notifications/initialized'));
+ h.send('ui/notifications/tool-input',{arguments:{chat:KEY}});
+ h.send('ui/notifications/tool-result',pickerResult(KEY));
+ await until(()=>h.toolCalls('ghf_debug_client_context').some(x=>x.params.arguments.context.event==='settled'));
+ const report=h.toolCalls('ghf_debug_client_context').find(x=>x.params.arguments.context.event==='settled').params.arguments.context;
+ assert.equal(report.key_source,'tool-input');assert.equal(report.has_key,true);assert.equal(report.has_result,true);
+ assert.equal(JSON.stringify(report.received),JSON.stringify(['ui/notifications/tool-input','ui/notifications/tool-result']));
+ assert.equal(JSON.stringify(h.toolCalls('ghf_debug_client_context')).includes(KEY),false,'diagnostics must not carry the chat key');
+});
+
+test('without diagnostics the card never calls the diagnostics tool',async t=>{
+ const h=harness(t);await until(()=>h.get('repo-label').textContent==='owner/one');
+ assert.equal(h.toolCalls('ghf_debug_client_context').length,0);
 });

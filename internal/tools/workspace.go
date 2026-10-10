@@ -87,13 +87,28 @@ func registerWorkspace(s *mcp.Server, d Services) {
 		out.Chat = chatFromContext(ctx)
 		return nil, out, e
 	})
+	cardHTML := ui.HTML
+	if d.DebugContext {
+		// The flag must exist before the card script runs.
+		cardHTML = strings.Replace(cardHTML, "<script>", "<script>window.GHF_DEBUG_CONTEXT=true;", 1)
+	}
 	// Only the current card and the previous one are served; both are the current HTML.
 	for _, r := range []struct{ uri, name string }{{ui.URI, "repository-picker"}, {ui.PreviousURI, "repository-picker-previous"}} {
 		s.AddResource(&mcp.Resource{URI: r.uri, Name: r.name, Title: "Репозиторий и ветка", MIMEType: ui.MIMEType, Meta: mcp.Meta{"ui": map[string]any{"prefersBorder": true, "csp": map[string]any{"connectDomains": []string{}, "resourceDomains": []string{}}}, "openai/ui": map[string]any{"availableDisplayModes": []string{"inline", "fullscreen"}}}}, func(ctx context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 			if _, e := identity.Require(ctx); e != nil {
 				return nil, e
 			}
-			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: r.uri, MIMEType: ui.MIMEType, Text: ui.HTML}}}, nil
+			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: r.uri, MIMEType: ui.MIMEType, Text: cardHTML}}}, nil
+		})
+	}
+	if d.DebugContext {
+		probe := descriptor(DebugContextTool, "Diagnostics only: the picker card reports its host context to the server request log.", true, false, true)
+		probe.Meta["ui"] = map[string]any{"visibility": []string{"app"}}
+		mcp.AddTool(s, probe, func(context.Context, *mcp.CallToolRequest, struct {
+			ChatInput
+			Context map[string]any `json:"context"`
+		}) (*mcp.CallToolResult, Empty, error) {
+			return nil, Empty{}, nil
 		})
 	}
 	mentions := descriptor("search_repository_mentions", "Search repository mentions for the desktop composer. Returns resource links; use the full picker for paginated search and branch selection.", true, false, true)

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -32,9 +33,19 @@ func Handler(c config.Config) (http.Handler, error) {
 		return nil, err
 	}
 	w := &workspace.Service{GitHub: g, Preferences: prefs}
-	s := tools.New(tools.Services{GitHub: g, Workspace: w, OAuth: c.OAuthEnabled()})
+	s := tools.New(tools.Services{GitHub: g, Workspace: w, OAuth: c.OAuthEnabled(), DebugContext: c.DebugRequests})
 	mux := http.NewServeMux()
 	var transport http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	if c.DebugRequests {
+		// Inside Protect, so each entry names the chat client (chatgpt or claude).
+		path := filepath.Join(c.StateDir, "debug", "mcp-requests.jsonl")
+		requests, err := newRequestLog(path)
+		if err != nil {
+			return nil, err
+		}
+		transport = requests.wrap(transport)
+		log.Printf("GitHub MCP: request diagnostics enabled; writing %s", path)
+	}
 	if c.OAuthEnabled() {
 		a := auth.New(c, g)
 		a.RegisterRoutes(mux)

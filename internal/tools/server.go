@@ -15,7 +15,12 @@ type Services struct {
 	GitHub    *github.Client
 	Workspace *workspace.Service
 	OAuth     bool
+	// DebugContext registers the card diagnostics tool (MCP_DEBUG_REQUESTS).
+	DebugContext bool
 }
+
+// DebugContextTool receives the card's host context for the request log only.
+const DebugContextTool = "ghf_debug_client_context"
 
 func New(d Services) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "ghf", Title: "GitHub workspace", Version: "3.2.0", WebsiteURL: "https://github.com/onnov/mcp"}, &mcp.ServerOptions{Instructions: instructions, Capabilities: &mcp.ServerCapabilities{Extensions: map[string]any{"io.modelcontextprotocol/ui": map[string]any{}}}})

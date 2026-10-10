@@ -68,6 +68,7 @@ GitHub OAuth App:
 | `MCP_ALLOW_DEFAULT_BRANCH_WRITES` | `false` по умолчанию |
 | `MCP_GOMAXPROCS` | `2`; ограничивает параллельное исполнение Go-кода, не число goroutines/OS threads |
 | `MCP_PUBLIC_HOST` | Дополнительный допустимый Host; обычно не нужен |
+| `MCP_DEBUG_REQUESTS` | `false`; `true` пишет диагностику запросов в `MCP_STATE_DIR/debug/mcp-requests.jsonl` |
 
 Без обоих GitHub credentials доступны только public read-only tools. Частично
 заданные credentials — ошибка запуска. OAuth требует HTTPS origin и MCP secret.
@@ -119,6 +120,21 @@ Dynamic Client Registration (DCR) и Client ID Metadata Documents (CIMD) не
 
 Claude кеширует список инструментов и HTML карточки. После обновления сервера,
 меняющего карточку, удалите коннектор в Claude и добавьте его заново.
+
+## Диагностика
+
+`MCP_DEBUG_REQUESTS=true` включает журнал запросов к `/mcp` в
+`MCP_STATE_DIR/debug/mcp-requests.jsonl` (права 0600, до 10 МиБ). Он показывает,
+какие идентификаторы присылает клиент (ChatGPT или Claude), не раскрывая их:
+
+- значения заголовков и `_meta` заменены HMAC-метками (одинаковые значения — одинаковые
+  метки в пределах одного запуска, восстановить значение нельзя);
+- `Authorization` и `Cookie` скрыты; `traceparent` разбит на `trace_id` и `span_id`;
+- у вызовов инструментов записываются только имена аргументов, без значений;
+- карточка выбора отправляет скрытый от модели инструмент `ghf_debug_client_context`:
+  какие сообщения хоста она получила и откуда взяла ключ чата (сам ключ не передаётся).
+
+Включайте только на время диагностики; после изменения переменной перезапустите сервер.
 
 ## Apache
 

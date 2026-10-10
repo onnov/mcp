@@ -24,6 +24,8 @@ type Config struct {
 	GitHubScopes                       string
 	AllowDefaultBranchWrites           bool
 	GOMAXPROCS                         int
+	// DebugRequests writes masked request diagnostics to <StateDir>/debug.
+	DebugRequests bool
 }
 
 func (c Config) OAuthEnabled() bool { return c.GitHubClientID != "" }
@@ -67,6 +69,12 @@ func Load(args []string) (Config, error) {
 		c.AllowDefaultBranchWrites, err = strconv.ParseBool(s)
 		if err != nil {
 			return c, errors.New("invalid MCP_ALLOW_DEFAULT_BRANCH_WRITES boolean")
+		}
+	}
+	if s := os.Getenv("MCP_DEBUG_REQUESTS"); s != "" {
+		c.DebugRequests, err = strconv.ParseBool(s)
+		if err != nil {
+			return c, errors.New("invalid MCP_DEBUG_REQUESTS boolean")
 		}
 	}
 	fs := flag.NewFlagSet("github-mcp", flag.ContinueOnError)

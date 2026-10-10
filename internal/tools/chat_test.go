@@ -7,6 +7,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/onnov/mcp/internal/preferences"
+	"github.com/onnov/mcp/internal/ui"
 )
 
 func chatKey(t *testing.T, r *mcp.CallToolResult) string {
@@ -126,6 +127,40 @@ func TestEveryToolAcceptsChat(t *testing.T) {
 			if _, ok := schema.Properties["chat"]; !ok {
 				t.Errorf("%s (OAuth=%t) has no chat parameter: %s", tool.Name, oauth, raw)
 			}
+		}
+	}
+}
+
+func TestDebugToolAndCardFlagOnlyWithDiagnostics(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		d := fixtures(t, true)
+		d.DebugContext = enabled
+		ctx, session := connect(t, d)
+		listed, e := session.ListTools(ctx, nil)
+		if e != nil {
+			t.Fatal(e)
+		}
+		var probe *mcp.Tool
+		for _, tool := range listed.Tools {
+			if tool.Name == DebugContextTool {
+				probe = tool
+			}
+		}
+		if (probe != nil) != enabled {
+			t.Fatalf("diagnostics tool registered=%t with DebugContext=%t", probe != nil, enabled)
+		}
+		if probe != nil {
+			visibility, _ := json.Marshal(probe.Meta["ui"])
+			if string(visibility) != `{"visibility":["app"]}` {
+				t.Fatalf("diagnostics tool visible to the model: %s", visibility)
+			}
+		}
+		card, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: ui.URI})
+		if e != nil {
+			t.Fatal(e)
+		}
+		if strings.Contains(card.Contents[0].Text, "window.GHF_DEBUG_CONTEXT=true") != enabled {
+			t.Fatalf("card diagnostics flag with DebugContext=%t", enabled)
 		}
 	}
 }
