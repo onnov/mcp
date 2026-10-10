@@ -151,10 +151,9 @@ func (m *Manager) OutputSession(session string, target workspace.Target, jobID s
 	return out, nil
 }
 
+// CancelAllSession stops only the jobs of one session. Clients without a chat
+// identifier share the "" session; they never stop other chats' jobs.
 func (m *Manager) CancelAllSession(session string) []View {
-	if session == "" {
-		return m.CancelAll()
-	}
 	m.mu.Lock()
 	rows := []View{}
 	type pendingPersist struct {

@@ -4,6 +4,9 @@
  const version = '1.1.8';
  const pending = new Map(), listeners = new Set(), teardownListeners = new Set();
  let serial = 0, last = null, lastHeight = 0, closed = false;
+ // Server-issued chat key (clients without chat metadata, e.g. Claude): the
+ // card's own tool calls must stay in the chat that rendered it.
+ let chat = '';
  const notify = (method, params) => {
   if (!closed) parent.postMessage({jsonrpc: '2.0', method, params}, '*');
  };
@@ -24,7 +27,12 @@
   if (text) return JSON.parse(text);
   throw Error('Нет результата');
  }
+ function remember(result) {
+  const key = result?._meta?.pc_chat || result?.structuredContent?.chat;
+  if (typeof key === 'string' && key) chat = key;
+ }
  function deliver(result) {
+  remember(result);
   last = result;
   for (const fn of listeners) fn(result);
  }
@@ -53,7 +61,12 @@
  window.PC = {
   rpc, notify, decode, version,
   tool: async (name, args = {}) => {
-   try {return decode(await rpc('tools/call', {name, arguments: args}));}
+   if (chat && args.chat === undefined) args = {...args, chat};
+   try {
+    const result = await rpc('tools/call', {name, arguments: args});
+    remember(result);
+    return decode(result);
+   }
    catch (e) {
     // Keep the tool name and correlation ID; never log argv or approval nonce.
     throw Object.assign(Error('tools/call ' + name
@@ -77,8 +90,10 @@
     } catch (_) {}
    }
   },
+  // The model must keep using the chat key this card works in.
   context: async (data, text) => rpc('ui/update-model-context', {
-   structuredContent: data, content: [{type: 'text', text}]
+   structuredContent: chat ? {...data, chat} : data,
+   content: [{type: 'text', text: chat ? text + ' Pass chat="' + chat + '" in every pc_* call of this chat.' : text}]
   }),
   resize: () => {
    const height = Math.ceil(document.documentElement.getBoundingClientRect().height);

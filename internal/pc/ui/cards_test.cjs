@@ -191,3 +191,36 @@ test('cards report host context only when operator diagnostics are enabled', asy
     h.destroy();
   }
 });
+
+test('cards keep the server-issued chat key in their own tool calls', async t => {
+  const request = {directory: 'project', branch: 'main', cwd: '.', args: ['make'], purpose: 'build', seconds: 30};
+  const seen = [];
+  const h = harness(t, 'approve.html', {structuredContent: {id: 'job-chat', request, status: 'awaiting_approval'},
+    _meta: {approval_nonce: 'nonce-chat', pc_chat: 'c_0123456789abcdef0123456789abcdef'}}, {
+    pc_approve_run: args => {seen.push(args); return {id: 'job-chat', request, status: 'running'};},
+    pc_job_status: args => {seen.push(args); return {id: 'job-chat', request, status: 'running',
+      output: {records: [], records_cursor: 0, more: false, cursor: 0, head: [], tail: [], omitted: 0, evicted: 0, total_records: 0, bytes: 0}};}
+  });
+  for (let i = 0; i < 200 && h.get('approve').disabled; i++) await new Promise(r => setTimeout(r, 5));
+  await h.get('approve').onclick();
+  assert.ok(seen.length > 0);
+  for (const args of seen) assert.equal(args.chat, 'c_0123456789abcdef0123456789abcdef');
+  h.destroy();
+});
+
+test('a key issued to the card itself reaches the model context', async t => {
+  const key = 'c_fedcba9876543210fedcba9876543210';
+  const proposed = {available: true, remembered: true, session_bound: false, directory: 'project', branch: 'main', git: true, branches: ['main']};
+  const h = harness(t, 'picker.html', {structuredContent: {entries: [], next_offset: -1}, _meta: {pc_browser_path: 'project'}}, {
+    pc_get_workspace: () => proposed,
+    pc_open_workspace_picker: () => ({structuredContent: {chat: key, selection: {...proposed, session_bound: true, chat: key},
+      directories: {entries: [], next_offset: -1}, browser_path: 'project'}, _meta: {pc_chat: key}}),
+    pc_list_directory: args => {assert.equal(args.chat, key); return {entries: [], next_offset: -1};}
+  });
+  for (let i = 0; i < 200 && !h.calls.some(c => c.method === 'ui/update-model-context' && c.params.structuredContent.chat); i++)
+    await new Promise(r => setTimeout(r, 5));
+  const context = h.calls.filter(c => c.method === 'ui/update-model-context').pop();
+  assert.equal(context.params.structuredContent.chat, key);
+  assert.match(context.params.content[0].text, new RegExp(key));
+  h.destroy();
+});
