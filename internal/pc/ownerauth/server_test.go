@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -273,6 +275,7 @@ func TestBasicClientAuthenticationAndDeniedConsent(t *testing.T) {
 
 func TestOwnerOAuthClaudeCallbackIsBoundToItsCode(t *testing.T) {
 	s, h := testServer(t)
+	s.StateDir = t.TempDir()
 	claude := ClaudeRedirectURIs[0]
 	q := url.Values{"client_id": {s.ClientID}, "redirect_uri": {claude}, "response_type": {"code"}, "resource": {s.resource()}, "scope": {Scope}, "state": {"claude-state"}, "code_challenge": {challenge(strings.Repeat("v", 43))}, "code_challenge_method": {"S256"}}
 	w := request(h, "GET", "/oauth/authorize?"+q.Encode(), nil, nil)
@@ -294,6 +297,9 @@ func TestOwnerOAuthClaudeCallbackIsBoundToItsCode(t *testing.T) {
 	}
 	f.Set("redirect_uri", claude)
 	tokens(t, request(h, "POST", "/oauth/token", f, nil))
+	if files, _ := filepath.Glob(filepath.Join(s.StateDir, "claude", "*.json")); len(files) != 1 {
+		t.Fatal("Claude grant was not stored in its own directory", files)
+	}
 }
 
 func TestOwnerOAuthAuthorizeExplainsRejectedParameter(t *testing.T) {
@@ -304,5 +310,58 @@ func TestOwnerOAuthAuthorizeExplainsRejectedParameter(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &v)
 	if w.Code != 400 || v["error"] != "invalid_request" || !strings.Contains(v["error_description"], "redirect_uri") || w.Header().Get("Location") != "" {
 		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
+func TestOwnerOAuthGrantsSurviveRestartUntilDirectoryRemoved(t *testing.T) {
+	s, h := testServer(t)
+	s.StateDir = t.TempDir()
+	a, refresh := tokens(t, request(h, "POST", "/oauth/token", tokenForm(s, authorizeCode(t, s, h)), nil))
+	files, _ := filepath.Glob(filepath.Join(s.StateDir, "chatgpt", "*.json"))
+	if len(files) != 1 {
+		t.Fatal("ChatGPT grant was not stored in its own directory", files)
+	}
+	if b, _ := os.ReadFile(files[0]); strings.Contains(string(b), a) || strings.Contains(string(b), refresh) {
+		t.Fatal("grant file contains a usable token")
+	}
+
+	restarted, err := New(s.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2 := http.NewServeMux()
+	restarted.RegisterRoutes(h2)
+	h2.Handle("/mcp", restarted.Protect(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })))
+	if protected(h2, a) != 204 {
+		t.Fatal("access token lost on restart")
+	}
+	f := url.Values{"grant_type": {"refresh_token"}, "client_id": {s.ClientID}, "client_secret": {s.ClientSecret}, "resource": {s.resource()}, "refresh_token": {refresh}}
+	a2, _ := tokens(t, request(h2, "POST", "/oauth/token", f, nil))
+	if protected(h2, a) != 401 || protected(h2, a2) != 204 {
+		t.Fatal("rotation after restart failed")
+	}
+
+	again, err := New(s.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h3 := http.NewServeMux()
+	again.RegisterRoutes(h3)
+	if w := request(h3, "POST", "/oauth/token", f, nil); w.Code != 400 {
+		t.Fatal("rotated refresh token accepted after restart")
+	}
+	if files, _ := filepath.Glob(filepath.Join(s.StateDir, "chatgpt", "*.json")); len(files) != 0 {
+		t.Fatal("refresh replay after restart did not revoke the stored grant")
+	}
+
+	a3, _ := tokens(t, request(h2, "POST", "/oauth/token", tokenForm(s, authorizeCode(t, s, h2)), nil))
+	if protected(h2, a3) != 204 {
+		t.Fatal("new grant rejected")
+	}
+	if err := os.RemoveAll(filepath.Join(s.StateDir, "chatgpt")); err != nil {
+		t.Fatal(err)
+	}
+	if protected(h2, a3) != 401 {
+		t.Fatal("deleting the client directory did not revoke a running grant")
 	}
 }

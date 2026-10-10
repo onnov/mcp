@@ -62,6 +62,8 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	s.prune()
 	var g *grant
 	var consumed [32]byte
+	var codeExpires time.Time
+	used := [][32]byte{}
 	switch f.Get("grant_type") {
 	case "authorization_code":
 		verifier := f.Get("code_verifier")
@@ -80,8 +82,13 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
+		if len(s.access) >= 100 || len(s.refresh) >= 100 {
+			oauthError(w, 429, "temporarily_unavailable")
+			return
+		}
 		consumed = hash(f.Get("code"))
-		g = &grant{Expires: time.Now().Add(7 * 24 * time.Hour)}
+		codeExpires = c.Expires
+		g = &grant{ID: newGrantID(), Client: clientKey(c.RedirectURI), Expires: time.Now().Add(7 * 24 * time.Hour)}
 	case "refresh_token":
 		consumed = hash(f.Get("refresh_token"))
 		g = s.refresh[consumed]
@@ -92,32 +99,42 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
-	default:
-		oauthError(w, 400, "unsupported_grant_type")
-		return
-	}
-	if f.Get("grant_type") == "authorization_code" && (len(s.access) >= 100 || len(s.refresh) >= 100) {
-		oauthError(w, 429, "temporarily_unavailable")
-		return
-	}
-	if f.Get("grant_type") == "refresh_token" {
+		if !s.grantAlive(g) {
+			oauthError(w, 400, "invalid_grant")
+			return
+		}
 		if len(s.usedRefresh) >= 1024 {
 			oauthError(w, 429, "temporarily_unavailable")
 			return
 		}
-		s.usedRefresh[consumed] = g
-		s.removeGrant(g) // Atomic rotation, including the previous access token.
-	} else {
-		if s.AuthMode == "client-secret" {
-			c, _ := s.openClientCode(f.Get("code"))
-			s.consumed[consumed] = c.Expires
+		used = append(append(used, g.used...), consumed)
+		if len(used) > maxUsedRefresh {
+			used = used[len(used)-maxUsedRefresh:]
 		}
-		delete(s.codes, consumed)
+	default:
+		oauthError(w, 400, "unsupported_grant_type")
+		return
 	}
 	a, refresh := random(), random()
 	expires := time.Now().Add(time.Hour)
 	if g.Expires.Before(expires) {
 		expires = g.Expires
+	}
+	// Persist before changing memory: a failed write keeps the previous
+	// refresh token or the authorization code usable for a retry.
+	if err := s.saveGrant(g, hash(a), expires, hash(refresh), used); err != nil {
+		oauthError(w, 500, "server_error")
+		return
+	}
+	if f.Get("grant_type") == "refresh_token" {
+		s.usedRefresh[consumed] = g
+		g.used = used
+		s.removeGrant(g) // Atomic rotation, including the previous access token.
+	} else {
+		if s.AuthMode == "client-secret" {
+			s.consumed[consumed] = codeExpires
+		}
+		delete(s.codes, consumed)
 	}
 	s.access[hash(a)] = access{Grant: g, Expires: expires}
 	s.refresh[hash(refresh)] = g
@@ -139,6 +156,7 @@ func (s *Server) removeGrant(g *grant) {
 
 func (s *Server) revokeGrant(g *grant) {
 	s.removeGrant(g)
+	s.deleteGrantFile(g)
 	for k, v := range s.usedRefresh {
 		if v == g {
 			delete(s.usedRefresh, k)

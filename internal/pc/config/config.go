@@ -151,6 +151,13 @@ func Parse(args []string) (Config, error) {
 		}
 		c.OAuth = ownerauth.Config{PublicURL: strings.TrimRight(os.Getenv("PC_MCP_PUBLIC_URL"), "/"), ClientID: env("PC_MCP_OAUTH_CLIENT_ID", "pc-mcp-chatgpt"), ClientSecret: os.Getenv("PC_MCP_OAUTH_CLIENT_SECRET"), RedirectURI: env("PC_MCP_OAUTH_REDIRECT_URI", "https://chatgpt.com/connector_platform_oauth_redirect"), PasswordHash: os.Getenv("PC_MCP_OWNER_PASSWORD_HASH")}
 		c.OAuth.AuthMode = ownerAuth
+		persist, err := strconv.ParseBool(env("PC_MCP_OAUTH_PERSIST", "true"))
+		if err != nil {
+			return c, errors.New("PC_MCP_OAUTH_PERSIST must be true or false")
+		}
+		if persist {
+			c.OAuth.StateDir = filepath.Join(c.State, "oauth")
+		}
 		for _, raw := range strings.Split(trustedProxies, ",") {
 			if strings.TrimSpace(raw) == "" {
 				continue

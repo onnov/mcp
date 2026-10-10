@@ -33,6 +33,8 @@ type Config struct {
 	// AuthMode is password (default) or client-secret for a private, single-owner client.
 	AuthMode       string
 	TrustedProxies []netip.Prefix
+	// StateDir persists grants across restarts; empty keeps them in memory only.
+	StateDir string
 }
 
 func (c Config) Validate() error {
@@ -76,7 +78,11 @@ type code struct {
 	Challenge, RedirectURI string
 	Expires                time.Time
 }
-type grant struct{ Expires time.Time }
+type grant struct {
+	ID, Client string
+	Expires    time.Time
+	used       [][32]byte // recent rotated refresh hashes, for replay detection
+}
 type access struct {
 	Grant   *grant
 	Expires time.Time
@@ -104,7 +110,11 @@ func New(c Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{Config: c, envelope: aead, consumed: map[[32]byte]time.Time{}, loginLimit: &Limiter{Max: 10, Period: time.Minute}, authorizeLimit: &Limiter{Max: 30, Period: time.Minute}, anonymousLimit: &Limiter{Max: 60, Period: time.Minute}, codes: map[[32]byte]code{}, access: map[[32]byte]access{}, refresh: map[[32]byte]*grant{}, usedRefresh: map[[32]byte]*grant{}, login: make(chan struct{}, 2)}, nil
+	s := &Server{Config: c, envelope: aead, consumed: map[[32]byte]time.Time{}, loginLimit: &Limiter{Max: 10, Period: time.Minute}, authorizeLimit: &Limiter{Max: 30, Period: time.Minute}, anonymousLimit: &Limiter{Max: 60, Period: time.Minute}, codes: map[[32]byte]code{}, access: map[[32]byte]access{}, refresh: map[[32]byte]*grant{}, usedRefresh: map[[32]byte]*grant{}, login: make(chan struct{}, 2)}
+	if err := s.loadGrants(); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 func hash(s string) [32]byte { return sha256.Sum256([]byte(s)) }
 func same(a, b string) bool {
@@ -155,6 +165,7 @@ func (s *Server) prune() {
 	for k, g := range s.refresh {
 		if !now.Before(g.Expires) {
 			delete(s.refresh, k)
+			s.deleteGrantFile(g)
 		}
 	}
 	for k, g := range s.usedRefresh {
@@ -201,7 +212,7 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 			s.mu.Lock()
 			a, exists := s.access[hash(parts[1])]
 			now := time.Now()
-			ok = exists && now.Before(a.Expires) && now.Before(a.Grant.Expires)
+			ok = exists && now.Before(a.Expires) && now.Before(a.Grant.Expires) && s.grantAlive(a.Grant)
 			s.mu.Unlock()
 		}
 		if !ok {
