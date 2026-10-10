@@ -9,15 +9,18 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/onnov/mcp/internal/pc/ownerauth"
+	"github.com/onnov/mcp/internal/pc/tools"
 )
 
 // requestLog records the shape of authenticated MCP requests so the owner can
@@ -86,6 +89,10 @@ func (l *requestLog) mask(v any) any {
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, item := range x {
+			if text, ok := item.(string); ok && strings.EqualFold(k, "traceparent") {
+				out[k] = l.traceparent(text)
+				continue
+			}
 			out[k] = l.mask(item)
 		}
 		return out
@@ -96,12 +103,72 @@ func (l *requestLog) mask(v any) any {
 		}
 		return out
 	case string:
+		if u, err := url.Parse(x); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+			return l.url(u)
+		}
 		return l.tag(x)
 	case json.Number:
 		return l.tag(x.String())
 	default: // bool, null
 		return x
 	}
+}
+
+// url keeps the host (a site name, such as claude.ai) and tags each path
+// segment and query value: a chat ID inside a URL then shows up as its own tag.
+func (l *requestLog) url(u *url.URL) map[string]any {
+	segments := []any{}
+	for _, part := range strings.Split(strings.Trim(u.EscapedPath(), "/"), "/") {
+		if part != "" {
+			segments = append(segments, l.tag(part))
+		}
+	}
+	query := map[string]any{}
+	for k, values := range u.Query() {
+		tags := make([]any, len(values))
+		for i, v := range values {
+			tags[i] = l.tag(v)
+		}
+		query[k] = tags
+	}
+	out := map[string]any{"url_scheme": u.Scheme, "url_host": u.Host, "path_segments": segments, "query": query}
+	if u.Fragment != "" {
+		out["fragment"] = l.tag(u.Fragment)
+	}
+	return out
+}
+
+// traceparent splits W3C version-traceid-spanid-flags so a trace ID shared
+// by several requests is visible even when each request has its own span.
+func (l *requestLog) traceparent(v string) any {
+	parts := strings.Split(v, "-")
+	if len(parts) != 4 {
+		return l.tag(v)
+	}
+	return map[string]any{"version": parts[0], "trace_id": l.tag(parts[1]), "span_id": l.tag(parts[2]), "flags": parts[3]}
+}
+
+// cloudTrace splits Google's TRACE_ID/SPAN_ID;o=OPTIONS.
+func (l *requestLog) cloudTrace(v string) any {
+	trace, rest, ok := strings.Cut(v, "/")
+	if !ok {
+		return l.tag(v)
+	}
+	span, options, _ := strings.Cut(rest, ";")
+	return map[string]any{"trace_id": l.tag(trace), "span_id": l.tag(span), "options": options}
+}
+
+// keyValues keeps the keys of a tracestate/baggage list and tags their values.
+func (l *requestLog) keyValues(v string) any {
+	out := map[string]any{}
+	for _, item := range strings.Split(v, ",") {
+		k, value, ok := strings.Cut(strings.TrimSpace(item), "=")
+		if !ok {
+			return l.tag(v)
+		}
+		out[k] = l.tag(value)
+	}
+	return out
 }
 
 func sortedKeys(m map[string]any) []string {
@@ -139,6 +206,9 @@ func (l *requestLog) rpcEntry(raw map[string]any) map[string]any {
 		entry["tool"], _ = params["name"].(string)
 		if args, ok := params["arguments"].(map[string]any); ok {
 			entry["argument_keys"] = sortedKeys(args)
+			if entry["tool"] == tools.DebugContextTool {
+				entry["client_context"] = l.mask(args["context"])
+			}
 		}
 	case "resources/read":
 		entry["uri"], _ = params["uri"].(string)
@@ -155,6 +225,19 @@ func (l *requestLog) record(r *http.Request, body []byte) {
 			value = "[redacted]"
 		case clearHeaders[name]:
 			value = values
+		case name == "Traceparent" || name == "X-Cloud-Trace-Context" || name == "Tracestate" || name == "Baggage":
+			parsed := make([]any, len(values))
+			for i, v := range values {
+				switch name {
+				case "Traceparent":
+					parsed[i] = l.traceparent(v)
+				case "X-Cloud-Trace-Context":
+					parsed[i] = l.cloudTrace(v)
+				default:
+					parsed[i] = l.keyValues(v)
+				}
+			}
+			value = parsed
 		default:
 			tags := make([]any, len(values))
 			for i, v := range values {

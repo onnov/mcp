@@ -219,3 +219,50 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 		}
 	}
 }
+
+func TestDebugContextProbeOnlyWhenEnabled(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		d := t.TempDir()
+		root, state := filepath.Join(d, "root"), filepath.Join(d, "state")
+		os.Mkdir(root, 0700)
+		os.Mkdir(state, 0700)
+		engine := &sandbox.Engine{MaxSeconds: 10}
+		ws, e := workspace.New(root, state, engine)
+		if e != nil {
+			t.Fatal(e)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		jm := jobs.New(ctx, ws, engine, 10)
+		st, ct := mcp.NewInMemoryTransports()
+		go New(ws, jm, Options{DebugContext: enabled}).Run(ctx, st)
+		session, e := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, ct, nil)
+		if e != nil {
+			t.Fatal(e)
+		}
+		list, e := session.ListTools(ctx, nil)
+		if e != nil {
+			t.Fatal(e)
+		}
+		found := false
+		for _, tool := range list.Tools {
+			if tool.Name == DebugContextTool {
+				found = true
+				if v, _ := json.Marshal(tool.Meta["ui"]); string(v) != `{"visibility":["app"]}` {
+					t.Fatal("diagnostic tool must be hidden from the model", string(v))
+				}
+			}
+		}
+		res, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: ui.PickerURI})
+		if e != nil {
+			t.Fatal(e)
+		}
+		flagged := strings.Contains(res.Contents[0].Text, "window.PC_DEBUG_CONTEXT=true")
+		if found != enabled || flagged != enabled {
+			t.Fatal("diagnostic probe must follow the operator setting", enabled, found, flagged)
+		}
+		session.Close()
+		cancel()
+		jm.Close()
+		ws.Close()
+	}
+}

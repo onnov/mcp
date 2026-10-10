@@ -64,9 +64,18 @@
   onResult: fn => {listeners.add(fn); if (last) fn(last); return () => listeners.delete(fn);},
   onTeardown: fn => {teardownListeners.add(fn); return () => teardownListeners.delete(fn);},
   ready: async () => {
-   await rpc('ui/initialize', {appInfo: {name: 'pc-mcp', version},
+   const init = await rpc('ui/initialize', {appInfo: {name: 'pc-mcp', version},
     appCapabilities: {}, protocolVersion: '2026-01-26'});
    notify('ui/notifications/initialized', {});
+   // Operator diagnostics only (PC_MCP_DEBUG_REQUESTS): report what the host
+   // tells this card, so the server log can show whether it identifies a chat.
+   if (window.PC_DEBUG_CONTEXT) {
+    try {
+     rpc('tools/call', {name: 'pc_debug_client_context', arguments: {context: {
+      initialize: init, location_href: globalThis.location?.href, referrer: globalThis.document?.referrer,
+      ancestor_origins: Array.from(globalThis.location?.ancestorOrigins || []), window_name: window.name}}}).catch(() => {});
+    } catch (_) {}
+   }
   },
   context: async (data, text) => rpc('ui/update-model-context', {
    structuredContent: data, content: [{type: 'text', text}]

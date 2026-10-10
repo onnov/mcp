@@ -173,3 +173,21 @@ test('workspace command history can expand retained console output',async t=>{
  assert.match(pre.textContent,/00002 \[stderr\] warning/);
  assert.equal(h.tools('pc_job_status').length,1);
 });
+
+test('cards report host context only when operator diagnostics are enabled', async t => {
+  const fs = require('node:fs'), path = require('node:path');
+  for (const enabled of [false, true]) {
+    let source = fs.readFileSync(path.join(__dirname, 'picker.html'), 'utf8');
+    if (enabled) source = source.replace('<script>', '<script>window.PC_DEBUG_CONTEXT=true;');
+    const cache = new Map([['debug-' + enabled, source]]);
+    const reported = [];
+    const h = harness(t, 'picker.html', undefined, {
+      pc_debug_client_context: args => {reported.push(args); return {};}
+    }, {resourceCache: cache, resourceURI: 'debug-' + enabled});
+    for (let i = 0; i < 50 && h.calls.length < 2; i++) await new Promise(r => setTimeout(r, 5));
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(reported.length, enabled ? 1 : 0);
+    if (enabled) assert.ok(reported[0].context.initialize, 'ui/initialize result is reported');
+    h.destroy();
+  }
+});

@@ -69,3 +69,61 @@ func TestRequestLogMasksIdentifiersAndArguments(t *testing.T) {
 		t.Fatal("log must be private", st.Mode())
 	}
 }
+
+func TestRequestLogSplitsTracesAndMasksCardContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "requests.jsonl")
+	l, err := newRequestLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := l.wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pc_debug_client_context","arguments":{"context":{"referrer":"https://claude.ai/chat/7d0c2b1e-1111-4222-8333-444455556666?x=secret-q","initialize":{"hostContext":{"theme":"dark","toolInfo":{"id":"toolu_abcdef"}}}}}}}`
+	for _, span := range []string{"1111111111111111", "2222222222222222"} {
+		r := httptest.NewRequest("POST", "/mcp", strings.NewReader(body))
+		r.Header.Set("Traceparent", "00-0af7651916cd43dd8448eb211c80319c-"+span+"-01")
+		r.Header.Set("X-Cloud-Trace-Context", "105445aa7843bc8bf206b12000100000/"+span+";o=1")
+		r.Header.Set("Baggage", "conversation=c-77,user=u-1")
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	raw, _ := os.ReadFile(path)
+	text := string(raw)
+	for _, secret := range []string{"0af7651916cd43dd", "7d0c2b1e", "secret-q", "toolu_abcdef", "c-77", "105445aa"} {
+		if strings.Contains(text, secret) {
+			t.Fatal("log leaked", secret)
+		}
+	}
+	type logged struct {
+		Headers struct {
+			Traceparent []struct {
+				Trace map[string]any `json:"trace_id"`
+				Span  map[string]any `json:"span_id"`
+			} `json:"Traceparent"`
+			Baggage []map[string]any `json:"Baggage"`
+		} `json:"headers"`
+		RPC []struct {
+			Context map[string]any `json:"client_context"`
+		} `json:"rpc"`
+	}
+	var entries []logged
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		var e logged
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, e)
+	}
+	if len(entries) != 2 {
+		t.Fatal(text)
+	}
+	a, b := entries[0].Headers.Traceparent[0], entries[1].Headers.Traceparent[0]
+	if a.Trace["tag"] != b.Trace["tag"] || a.Span["tag"] == b.Span["tag"] {
+		t.Fatal("trace id must be comparable separately from span id", text)
+	}
+	if _, ok := entries[0].Headers.Baggage[0]["conversation"]; !ok {
+		t.Fatal("baggage keys must stay readable", text)
+	}
+	referrer, _ := entries[0].RPC[0].Context["referrer"].(map[string]any)
+	if referrer["url_host"] != "claude.ai" || len(referrer["path_segments"].([]any)) != 2 {
+		t.Fatal("card referrer must keep host and tag path segments", text)
+	}
+}

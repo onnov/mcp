@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/onnov/mcp/internal/pc/files"
@@ -86,10 +87,18 @@ func uiTool(t *mcp.Tool, uri string) {
 	t.Meta["openai/widgetAccessible"] = true
 }
 
-type Options struct{ OAuth bool }
+type Options struct {
+	OAuth bool
+	// DebugContext lets cards report their host context for request diagnostics.
+	DebugContext bool
+}
+
+// DebugContextTool receives a card's host context; the HTTP request log masks it.
+const DebugContextTool = "pc_debug_client_context"
 
 func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Server {
 	oauth := len(options) > 0 && options[0].OAuth
+	debugContext := len(options) > 0 && options[0].DebugContext
 	descriptor := func(name, description string, read bool) *mcp.Tool {
 		t := baseDescriptor(name, description, read)
 		if oauth {
@@ -237,13 +246,29 @@ func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Serve
 		rows, e := jm.ListSession(session, target)
 		return nil, map[string]any{"jobs": rows}, e
 	})
+	if debugContext {
+		probe := descriptor(DebugContextTool, "Diagnostics only: a card reports its host context to the server request log.", true)
+		probe.Meta["ui"] = map[string]any{"visibility": []string{"app"}}
+		mcp.AddTool(s, probe, func(context.Context, *mcp.CallToolRequest, struct {
+			Context map[string]any `json:"context"`
+		}) (*mcp.CallToolResult, Empty, error) {
+			return nil, Empty{}, nil
+		})
+	}
+	cardHTML := func(html string) string {
+		if !debugContext {
+			return html
+		}
+		// The first script is the bridge; the flag must exist before it runs.
+		return strings.Replace(html, "<script>", "<script>window.PC_DEBUG_CONTEXT=true;", 1)
+	}
 	for _, r := range []struct{ uri, name, html string }{{ui.PickerURI, "workspace-picker", ui.Picker}, {ui.LegacyPickerURI, "workspace-picker-legacy", ui.Picker}, {ui.PreviousPickerURI, "workspace-picker-v6", ui.Picker}, {ui.OlderPickerURI, "workspace-picker-v5", ui.Picker}, {ui.OldestPickerURI, "workspace-picker-v4", ui.Picker}, {ui.ApprovalURI, "command-confirmation", ui.Approval}, {ui.PreviousApprovalURI, "command-confirmation-v10", ui.Approval}, {ui.OlderApprovalURI, "command-confirmation-v9", ui.Approval}, {ui.OldestApprovalURI, "command-confirmation-v8", ui.Approval}, {ui.EarlierApprovalURI, "command-confirmation-v7", ui.Approval}, {ui.LegacyApprovalURI, "command-confirmation-legacy", ui.Approval}} {
 		meta := mcp.Meta{"ui": map[string]any{"prefersBorder": true, "csp": map[string]any{"connectDomains": []string{}, "resourceDomains": []string{}}}, "openai/ui": map[string]any{"availableDisplayModes": []string{"inline", "fullscreen"}}}
 		if r.uri == ui.PickerURI || r.uri == ui.LegacyPickerURI || r.uri == ui.PreviousPickerURI || r.uri == ui.OlderPickerURI || r.uri == ui.OldestPickerURI {
 			meta["openai/widgetDescription"] = "Interactive PC workspace browser: open nested folders, use clickable ancestor breadcrumbs, filter names, select a directory and its current/existing/new Git branch. The selection is bound to the current chat; a new chat is prefilled from the global last workspace and can accept it by simply closing the card. Let the user change it in this card when needed."
 		}
 		s.AddResource(&mcp.Resource{URI: r.uri, Name: r.name, MIMEType: ui.MIMEType, Meta: meta}, func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: r.uri, MIMEType: ui.MIMEType, Text: r.html, Meta: meta}}}, nil
+			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: r.uri, MIMEType: ui.MIMEType, Text: cardHTML(r.html), Meta: meta}}}, nil
 		})
 	}
 	// Useful plain-text fallback for clients with no MCP Apps support.
