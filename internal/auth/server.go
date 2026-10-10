@@ -6,18 +6,28 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"log"
+	"net/http"
+	"net/url"
+	"slices"
+	"sync"
+	"time"
+
 	"github.com/onnov/mcp/internal/config"
 	"github.com/onnov/mcp/internal/github"
 	"github.com/onnov/mcp/internal/identity"
-	"net/http"
-	"net/url"
-	"sync"
-	"time"
 )
+
+// ClaudeRedirectURIs are the hosted Claude callbacks (claude.ai web, Desktop,
+// mobile). They are accepted alongside the configured ChatGPT callback, so one
+// MCP client works with both. Each authorization request and its code stay
+// bound to the callback that started it.
+var ClaudeRedirectURIs = []string{"https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback"}
 
 type oauthGrant = identity.Principal
 type oauthPending struct {
-	State          string // ChatGPT's state, returned only to the configured redirect URI.
+	State          string // The chat client's state, returned only to RedirectURI.
+	RedirectURI    string // Validated callback of this authorization request.
 	Challenge      string
 	GitHubVerifier string
 	CookieHash     [32]byte
@@ -25,9 +35,10 @@ type oauthPending struct {
 }
 
 type oauthCode struct {
-	Grant     *oauthGrant
-	Challenge string
-	Expires   time.Time
+	Grant       *oauthGrant
+	Challenge   string
+	RedirectURI string
+	Expires     time.Time
 }
 
 type oauthAccess struct {
@@ -115,10 +126,29 @@ func oauthError(w http.ResponseWriter, status int, code string) {
 	jsonResponse(w, status, map[string]string{"error": code})
 }
 
+// oauthFail explains a rejection to the browser or client and in the server
+// log, so the operator can see which step failed. Descriptions never hold secrets.
+func oauthFail(w http.ResponseWriter, r *http.Request, status int, code, description string) {
+	log.Printf("github-mcp: OAuth %s %s rejected (%d %s): %s", r.Method, r.URL.Path, status, code, description)
+	jsonResponse(w, status, map[string]string{"error": code, "error_description": description})
+}
+
+func (a *Server) allowedRedirect(uri string) bool {
+	return uri == a.RedirectURI || slices.Contains(ClaudeRedirectURIs, uri)
+}
+
+// clientKey names the chat client by its validated callback.
+func clientKey(redirectURI string) string {
+	if u, err := url.Parse(redirectURI); err == nil && u.Host == "chatgpt.com" {
+		return "chatgpt"
+	}
+	return "claude"
+}
+
 func (a *Server) RegisterRoutes(mux *http.ServeMux) {
 	resource := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			oauthError(w, 405, "invalid_request")
+			oauthFail(w, r, 405, "invalid_request", "metadata accepts only GET")
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -128,7 +158,7 @@ func (a *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", resource)
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			oauthError(w, 405, "invalid_request")
+			oauthFail(w, r, 405, "invalid_request", "metadata accepts only GET")
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -145,16 +175,26 @@ func (a *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/oauth/token", a.token)
 }
 
-func (a *Server) redirect(w http.ResponseWriter, r *http.Request, state, code, failure string) {
-	u, _ := url.Parse(a.RedirectURI) // Validated at startup, never taken from an untrusted request.
+// redirect returns to the callback bound to the authorization request; it was
+// checked against the allowed callbacks before any state was stored.
+func (a *Server) redirect(w http.ResponseWriter, r *http.Request, redirectURI, state, code, failure string) {
+	a.redirectWith(w, r, redirectURI, state, code, failure, "")
+}
+
+func (a *Server) redirectWith(w http.ResponseWriter, r *http.Request, redirectURI, state, code, failure, description string) {
+	u, _ := url.Parse(redirectURI)
 	q := u.Query()
 	q.Set("state", state)
 	q.Set("iss", a.PublicURL)
 	if failure != "" {
 		q.Set("error", failure)
+		if description != "" {
+			q.Set("error_description", description)
+		}
 	} else {
 		q.Set("code", code)
 	}
 	u.RawQuery = q.Encode()
+	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, u.String(), http.StatusFound)
 }

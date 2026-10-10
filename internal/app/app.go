@@ -120,6 +120,9 @@ func Run(args []string) error {
 		mode = "GitHub OAuth, user repositories and development tools"
 	}
 	log.Printf("GitHub MCP listening on http://%s/mcp (%s); GOMAXPROCS=%d", c.Addr, mode, c.GOMAXPROCS)
+	if c.OAuthEnabled() {
+		log.Printf("GitHub MCP: public endpoint %s/mcp; OAuth client_id=%s; callbacks: %s", c.PublicURL, c.MCPClientID, strings.Join(append([]string{c.RedirectURI}, auth.ClaudeRedirectURIs...), ", "))
+	}
 	return serve(ctx, s, s.ListenAndServe)
 }
 

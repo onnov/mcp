@@ -84,7 +84,8 @@ HTML встроен в бинарник через `go:embed`; Node/npm не н�
 Node 20+ нужен для тестов UI. Они проверяют bridge и состояния интерфейса; реальный
 рендеринг внутри ChatGPT проверяется после развёртывания. Есть `make check` / `make build`.
 
-Настройка и обновление существующего хостинга: [SETUP.md](SETUP.md).
+Настройка и обновление существующего хостинга: [SETUP.md](SETUP.md); подключение
+в ChatGPT и в Claude описано там же («Форма ChatGPT», «Подключение в Claude»).
 Минимум OAuth: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `MCP_CLIENT_SECRET`,
 `MCP_PUBLIC_URL`. Репозиторий в env больше не нужен. Для личного сервера задайте
 `GITHUB_ALLOWED_USER_ID`: ограничение пользователя, не репозитория.

@@ -35,7 +35,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o github_public_mcp ./cmd/git
 | Пара | Источник | Использование |
 |---|---|---|
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | GitHub OAuth App | Сервер подключает аккаунт GitHub |
-| `MCP_CLIENT_ID` / `MCP_CLIENT_SECRET` | Вы задаёте сами | ChatGPT получает токены MCP-сервера |
+| `MCP_CLIENT_ID` / `MCP_CLIENT_SECRET` | Вы задаёте сами | ChatGPT и Claude получают токены MCP-сервера |
 
 Client ID OAuth App не является числовым GitHub user ID. Пользователь входит в
 GitHub через браузер; сервер определяет ID через `/user`. GitHub password, PAT
@@ -94,6 +94,31 @@ Endpoint: `https://mcp-msk.v02.ru/mcp`, authentication OAuth.
 Discovery публикует URLs и scope. Если форма пытается динамически регистрировать
 клиента, выберите режим с заданным Client ID/Secret. Не подставляйте GitHub OAuth
 endpoints в эту форму: они относятся к внутреннему шагу подключения GitHub.
+
+## Подключение в Claude
+
+Тот же сервер и та же пара `MCP_CLIENT_ID` / `MCP_CLIENT_SECRET` работают в Claude
+(claude.ai, Desktop, мобильные приложения). Отдельной настройки сервера не нужно:
+callback'и Claude `https://claude.ai/api/mcp/auth_callback` и
+`https://claude.com/api/mcp/auth_callback` разрешены вместе с ChatGPT callback
+из `MCP_REDIRECT_URI`. Код авторизации привязан к callback'у своего запроса.
+
+1. Settings → Connectors → Add custom connector.
+2. URL: `https://mcp-msk.v02.ru/mcp` (обязательно с `/mcp`).
+3. Откройте «Advanced settings» (или «Use your own OAuth client») и введите:
+   - OAuth Client ID: значение `MCP_CLIENT_ID`;
+   - OAuth Client Secret: значение `MCP_CLIENT_SECRET`.
+4. Connect → вход в GitHub → возврат в Claude.
+
+Dynamic Client Registration (DCR) и Client ID Metadata Documents (CIMD) не
+поддерживаются: без своих Client ID/Secret Claude не подключится.
+
+При старте сервер печатает в лог `client_id` и список разрешённых callback'ов.
+Каждый отказ OAuth возвращается с `error_description` (какой параметр или шаг
+не прошёл) и пишется в лог сервера строкой `github-mcp: OAuth ... rejected`.
+
+Claude кеширует список инструментов и HTML карточки. После обновления сервера,
+меняющего карточку, удалите коннектор в Claude и добавьте его заново.
 
 ## Apache
 
