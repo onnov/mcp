@@ -33,6 +33,8 @@ type Info struct {
 	GitRoot            string   `json:"git_root,omitempty"`
 	Message            string   `json:"message,omitempty"`
 	SessionBound       bool     `json:"session_bound"`
+	// Chat is the server-issued chat key for clients without chat metadata.
+	Chat string `json:"chat,omitempty"`
 }
 type persisted struct {
 	Root      string `json:"root"`

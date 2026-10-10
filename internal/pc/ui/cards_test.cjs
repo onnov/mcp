@@ -173,3 +173,109 @@ test('workspace command history can expand retained console output',async t=>{
  assert.match(pre.textContent,/00002 \[stderr\] warning/);
  assert.equal(h.tools('pc_job_status').length,1);
 });
+
+test('cards report host context only when operator diagnostics are enabled', async t => {
+  const fs = require('node:fs'), path = require('node:path');
+  for (const enabled of [false, true]) {
+    let source = fs.readFileSync(path.join(__dirname, 'picker.html'), 'utf8');
+    if (enabled) source = source.replace('<script>', '<script>window.PC_DEBUG_CONTEXT=true;');
+    const cache = new Map([['debug-' + enabled, source]]);
+    const reported = [];
+    const h = harness(t, 'picker.html', undefined, {
+      pc_debug_client_context: args => {reported.push(args); return {};}
+    }, {resourceCache: cache, resourceURI: 'debug-' + enabled});
+    for (let i = 0; i < 50 && h.calls.length < 2; i++) await new Promise(r => setTimeout(r, 5));
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(reported.length, enabled ? 1 : 0);
+    if (enabled) assert.ok(reported[0].context.initialize, 'ui/initialize result is reported');
+    h.destroy();
+  }
+});
+
+test('cards keep the server-issued chat key in their own tool calls', async t => {
+  const request = {directory: 'project', branch: 'main', cwd: '.', args: ['make'], purpose: 'build', seconds: 30};
+  const seen = [];
+  const h = harness(t, 'approve.html', {structuredContent: {id: 'job-chat', request, status: 'awaiting_approval'},
+    _meta: {approval_nonce: 'nonce-chat', pc_chat: 'c_0123456789abcdef0123456789abcdef'}}, {
+    pc_approve_run: args => {seen.push(args); return {id: 'job-chat', request, status: 'running'};},
+    pc_job_status: args => {seen.push(args); return {id: 'job-chat', request, status: 'running',
+      output: {records: [], records_cursor: 0, more: false, cursor: 0, head: [], tail: [], omitted: 0, evicted: 0, total_records: 0, bytes: 0}};}
+  });
+  for (let i = 0; i < 200 && h.get('approve').disabled; i++) await new Promise(r => setTimeout(r, 5));
+  await h.get('approve').onclick();
+  assert.ok(seen.length > 0);
+  for (const args of seen) assert.equal(args.chat, 'c_0123456789abcdef0123456789abcdef');
+  h.destroy();
+});
+
+test('a key issued to the card itself reaches the model context', async t => {
+  const key = 'c_fedcba9876543210fedcba9876543210';
+  const proposed = {available: true, remembered: true, session_bound: false, directory: 'project', branch: 'main', git: true, branches: ['main']};
+  const h = harness(t, 'picker.html', {structuredContent: {entries: [], next_offset: -1}, _meta: {pc_browser_path: 'project'}}, {
+    pc_get_workspace: () => proposed,
+    pc_open_workspace_picker: () => ({structuredContent: {chat: key, selection: {...proposed, session_bound: true, chat: key},
+      directories: {entries: [], next_offset: -1}, browser_path: 'project'}, _meta: {pc_chat: key}}),
+    pc_list_directory: args => {assert.equal(args.chat, key); return {entries: [], next_offset: -1};}
+  });
+  for (let i = 0; i < 200 && !h.calls.some(c => c.method === 'ui/update-model-context' && c.params.structuredContent.chat); i++)
+    await new Promise(r => setTimeout(r, 5));
+  const context = h.calls.filter(c => c.method === 'ui/update-model-context').pop();
+  assert.equal(context.params.structuredContent.chat, key);
+  assert.match(context.params.content[0].text, new RegExp(key));
+  h.destroy();
+});
+
+test('picker waits for a late tool result and applies the choice to the rendering chat', async t => {
+  const key = 'c_00112233445566778899aabbccddeeff';
+  const bound = {available: true, remembered: true, session_bound: true, directory: 'AI/srt', branch: 'main', git: true, branches: ['main'], chat: key};
+  const target = {available: true, directory: 'AI/mcp', branch: 'dev', git: true, branches: ['dev'], dirty: false};
+  const calls = [];
+  const record = (name, result) => args => {calls.push({name, args}); return result;};
+  const h = harness(t, 'picker.html', {structuredContent: {chat: key, selection: bound, directories: {entries: [], next_offset: -1}, browser_path: 'AI'},
+    _meta: {pc_chat: key}}, {
+    pc_get_workspace: record('pc_get_workspace', {...bound, chat: 'c_ffffffffffffffffffffffffffffffff', session_bound: false}),
+    pc_open_workspace_picker: record('pc_open_workspace_picker', {selection: bound}),
+    pc_list_directory: record('pc_list_directory', {entries: [], next_offset: -1}),
+    pc_inspect_workspace: record('pc_inspect_workspace', target),
+    pc_select_workspace: record('pc_select_workspace', {...target, session_bound: true})
+  }, {initialDelayMs: 300, toolInput: {chat: key}});
+  await until(() => calls.some(c => c.name === 'pc_list_directory'));
+  assert.equal(calls.some(c => c.name === 'pc_get_workspace' || c.name === 'pc_open_workspace_picker'), false,
+    'the card must use the delivered selection instead of starting its own chat');
+  h.get('search').value = '';
+  await h.get('candidate').onclick();
+  await h.get('apply').onclick();
+  const select = calls.find(c => c.name === 'pc_select_workspace');
+  assert.ok(select, 'apply calls pc_select_workspace');
+  for (const c of calls) assert.equal(c.args.chat, key, c.name + ' must stay in the rendering chat');
+  h.destroy();
+});
+
+test('a card that never learns its chat key does not mint a new one', async t => {
+  const seen = [];
+  const h = harness(t, 'picker.html', undefined, {
+    pc_get_workspace: args => {seen.push(args); return {available: true, session_bound: true, directory: 'p', branch: '', git: false, branches: []};},
+    pc_list_directory: args => {seen.push(args); return {entries: [], next_offset: -1};}
+  });
+  for (let i = 0; i < 100 && seen.length < 2; i++) await new Promise(r => setTimeout(r, 50)); // settle waits 3 s
+  assert.ok(seen.length >= 2);
+  for (const args of seen) assert.equal(args.chat, 'none');
+  h.destroy();
+});
+
+test('a choice in the picker reaches the model as authoritative for its chat', async t => {
+  const s = {available: true, session_bound: true, directory: 'AI/mcp', branch: 'dev', git: true, branches: ['dev', 'main'], dirty: false};
+  const target = {...s, directory: 'AI/srt', branch: 'main', branches: ['main']};
+  const h = harness(t, 'picker.html', {structuredContent: {selection: s}}, {
+    pc_list_directory: () => ({entries: [], next_offset: -1}),
+    pc_inspect_workspace: () => target,
+    pc_select_workspace: a => ({...target, branch: a.branch})
+  });
+  await until(() => h.tools('pc_list_directory').length === 1);
+  await h.get('candidate').onclick();
+  await h.get('apply').onclick();
+  const last = h.calls.filter(c => c.method === 'ui/update-model-context').pop();
+  assert.equal(last.params.structuredContent.pcWorkspace.chosenInCard, true);
+  assert.equal(last.params.structuredContent.pcWorkspace.directory, 'AI/srt');
+  assert.match(last.params.content[0].text, /call pc_select_workspace with exactly these values/);
+});

@@ -62,7 +62,7 @@ func TestPCAuthenticatedHTTPWithoutGitHub(t *testing.T) {
 	defer jm.Close()
 	srv := httptest.NewUnstartedServer(nil)
 	defer srv.Close()
-	cfg := config.Config{HTTPAddr: srv.Listener.Addr().String(), OAuth: ownerauth.Config{PublicURL: "https://pc.example.com", ClientID: "pc-chatgpt", ClientSecret: strings.Repeat("s", 32), PasswordHash: string(hash), RedirectURI: "https://chatgpt.com/connector_platform_oauth_redirect"}}
+	cfg := config.Config{HTTPAddr: srv.Listener.Addr().String(), OAuth: ownerauth.Config{PublicURL: "https://pc.example.com", ClientID: "pc-chatgpt", ClientSecret: strings.Repeat("s", 32), PasswordHash: string(hash), RedirectURI: "https://chatgpt.com/connector_platform_oauth_redirect"}, State: t.TempDir(), DebugRequests: true}
 	handler, err := httpHandler(cfg, tools.New(ws, jm, tools.Options{OAuth: true}))
 	if err != nil {
 		t.Fatal(err)
@@ -158,6 +158,10 @@ func TestPCAuthenticatedHTTPWithoutGitHub(t *testing.T) {
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "pc_write_file", Arguments: map[string]any{"directory": ".", "branch": "", "path": "hello.txt", "text": "owner HTTP edit", "expected_revision": "new"}})
 	if err != nil || result.IsError {
 		t.Fatal("authenticated file write failed", err)
+	}
+	diagnostics, err := os.ReadFile(filepath.Join(cfg.State, "debug", "mcp-requests.jsonl"))
+	if err != nil || !strings.Contains(string(diagnostics), `"client":"chatgpt"`) || !strings.Contains(string(diagnostics), `"tool":"pc_write_file"`) || strings.Contains(string(diagnostics), "owner HTTP edit") || strings.Contains(string(diagnostics), token.Access) {
+		t.Fatal("request diagnostics missing or leaking", err)
 	}
 	content, err := os.ReadFile(filepath.Join(root, "hello.txt"))
 	if err != nil || string(content) != "owner HTTP edit" {

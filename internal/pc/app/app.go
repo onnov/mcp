@@ -74,7 +74,7 @@ func Serve(ctx context.Context, cfg config.Config) error {
 	jm.ConfirmCommands = cfg.ConfirmCommands
 	jm.MaxActive = cfg.MaxJobs
 	defer jm.Close()
-	server := tools.New(ws, jm, tools.Options{OAuth: cfg.Transport == "http" || cfg.Transport == "ssh"})
+	server := tools.New(ws, jm, tools.Options{OAuth: cfg.Transport == "http" || cfg.Transport == "ssh", DebugContext: cfg.DebugRequests})
 	if cfg.Transport == "http" || cfg.Transport == "ssh" {
 		return serveHTTP(ctx, cfg, server)
 	}

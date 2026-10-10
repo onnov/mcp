@@ -42,7 +42,9 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
  const $=id=>document.getElementById(id);
  let folder='.',candidate=null,next=-1,epoch=0,rows=[],busy=false,initial=null;
  const status=(text,error=false)=>{$('message').textContent=text;$('message').classList.toggle('error',error);PC.resize()};
- const context=async(s)=>PC.context({pcWorkspace:{directory:s.directory,branch:s.branch,command_directory:s.git_root||s.directory,sessionBound:s.session_bound===true}},'PC workspace for this chat: directory='+s.directory+'; branch='+(s.branch||'(no Git)')+'. Use these explicit values for every operation in this chat.');
+ const context=async(s,chosen=false)=>PC.context({pcWorkspace:{directory:s.directory,branch:s.branch,command_directory:s.git_root||s.directory,sessionBound:s.session_bound===true,chosenInCard:chosen}},chosen
+  ?'The user chose the PC workspace for this chat in the picker card: directory='+s.directory+'; branch='+(s.branch||'')+'. Before any other work, if pc_get_workspace for this chat shows a different directory or branch, call pc_select_workspace with exactly these values and this chat key, then use them for every operation.'
+  :'PC workspace for this chat: directory='+s.directory+'; branch='+(s.branch||'(no Git)')+'. Use these explicit values for every operation in this chat.');
  const lock=value=>{busy=value;for(const id of ['root','up','candidate','apply','more','branch','branch-search','new-branch'])$(id).disabled=value};
  function render(){
   const box=$('rows');box.replaceChildren();
@@ -99,7 +101,8 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
    const create=$('branch').value==='__pc_new__',branch=create?$('new-branch').value.trim():$('branch').value;
    if(create&&!branch)throw Error('Введите имя новой ветки');
    const selected=await PC.tool('pc_select_workspace',{directory:candidate.directory,branch,create,base_branch:candidate.branch||''});
-   candidate=selected;$('saved').textContent='Этот чат: '+selected.directory+' · '+(selected.branch||'без Git');branches();await context(selected);
+   candidate=selected;$('saved').textContent='Этот чат: '+selected.directory+' · '+(selected.branch||'без Git');branches();await context(selected,true);
+   PC.debug('apply');
    status('Выбор для этого чата сохранён.');
   }catch(error){status(error.message,true)}finally{lock(false);render()}
  };
@@ -148,6 +151,8 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
  PC.onResult(result=>{initial=result});
  try{
   await PC.ready();
+  await PC.settle(3000);
+  PC.debug('settled',{has_result:!!initial});
   const data=initial?.structuredContent;
   let selected=data?.selection||await PC.tool('pc_get_workspace');
   if(selected.available!==false&&selected.session_bound===false){

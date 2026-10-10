@@ -3,6 +3,7 @@
 package ownerauth
 
 import (
+	"context"
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,9 +11,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,11 +25,18 @@ import (
 
 const Scope = "pc"
 
+// ClaudeRedirectURIs are the hosted Claude callbacks (claude.ai web, Desktop,
+// mobile). They are accepted alongside the configured ChatGPT callback, so one
+// owner client works with both. Each code stays bound to its own callback.
+var ClaudeRedirectURIs = []string{"https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback"}
+
 type Config struct {
 	PublicURL, ClientID, ClientSecret, RedirectURI, PasswordHash string
 	// AuthMode is password (default) or client-secret for a private, single-owner client.
 	AuthMode       string
 	TrustedProxies []netip.Prefix
+	// StateDir persists grants across restarts; empty keeps them in memory only.
+	StateDir string
 }
 
 func (c Config) Validate() error {
@@ -62,15 +72,19 @@ func HashPassword(password []byte) ([]byte, error) {
 }
 
 type pending struct {
-	State, Challenge string
-	Cookie           [32]byte
-	Expires          time.Time
+	State, Challenge, RedirectURI string
+	Cookie                        [32]byte
+	Expires                       time.Time
 }
 type code struct {
-	Challenge string
-	Expires   time.Time
+	Challenge, RedirectURI string
+	Expires                time.Time
 }
-type grant struct{ Expires time.Time }
+type grant struct {
+	ID, Client string
+	Expires    time.Time
+	used       [][32]byte // recent rotated refresh hashes, for replay detection
+}
 type access struct {
 	Grant   *grant
 	Expires time.Time
@@ -98,7 +112,11 @@ func New(c Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{Config: c, envelope: aead, consumed: map[[32]byte]time.Time{}, loginLimit: &Limiter{Max: 10, Period: time.Minute}, authorizeLimit: &Limiter{Max: 30, Period: time.Minute}, anonymousLimit: &Limiter{Max: 60, Period: time.Minute}, codes: map[[32]byte]code{}, access: map[[32]byte]access{}, refresh: map[[32]byte]*grant{}, usedRefresh: map[[32]byte]*grant{}, login: make(chan struct{}, 2)}, nil
+	s := &Server{Config: c, envelope: aead, consumed: map[[32]byte]time.Time{}, loginLimit: &Limiter{Max: 10, Period: time.Minute}, authorizeLimit: &Limiter{Max: 30, Period: time.Minute}, anonymousLimit: &Limiter{Max: 60, Period: time.Minute}, codes: map[[32]byte]code{}, access: map[[32]byte]access{}, refresh: map[[32]byte]*grant{}, usedRefresh: map[[32]byte]*grant{}, login: make(chan struct{}, 2)}
+	if err := s.loadGrants(); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 func hash(s string) [32]byte { return sha256.Sum256([]byte(s)) }
 func same(a, b string) bool {
@@ -125,7 +143,17 @@ func jsonResponse(w http.ResponseWriter, status int, body any) {
 func oauthError(w http.ResponseWriter, status int, message string) {
 	jsonResponse(w, status, map[string]string{"error": message})
 }
+
+// oauthFail explains a rejection to the browser or client and in the server
+// log, so the owner can see which step failed. Descriptions never hold secrets.
+func oauthFail(w http.ResponseWriter, r *http.Request, status int, code, description string) {
+	log.Printf("pc-mcp: OAuth %s %s rejected (%d %s): %s", r.Method, r.URL.Path, status, code, description)
+	jsonResponse(w, status, map[string]string{"error": code, "error_description": description})
+}
 func (s *Server) resource() string { return s.PublicURL + "/mcp" }
+func (s *Server) allowedRedirect(uri string) bool {
+	return uri == s.RedirectURI || slices.Contains(ClaudeRedirectURIs, uri)
+}
 func (s *Server) prune() {
 	now := time.Now()
 	for k, expiry := range s.consumed {
@@ -146,6 +174,7 @@ func (s *Server) prune() {
 	for k, g := range s.refresh {
 		if !now.Before(g.Expires) {
 			delete(s.refresh, k)
+			s.deleteGrantFile(g)
 		}
 	}
 	for k, g := range s.usedRefresh {
@@ -158,7 +187,7 @@ func (s *Server) prune() {
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	metadata := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			oauthError(w, 405, "invalid_request")
+			oauthFail(w, r, 405, "invalid_request", "metadata accepts only GET")
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -168,7 +197,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", metadata)
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			oauthError(w, 405, "invalid_request")
+			oauthFail(w, r, 405, "invalid_request", "metadata accepts only GET")
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -187,12 +216,15 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 func (s *Server) Protect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Fields(r.Header.Get("Authorization"))
-		ok := false
+		ok, client := false, ""
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
 			s.mu.Lock()
 			a, exists := s.access[hash(parts[1])]
 			now := time.Now()
-			ok = exists && now.Before(a.Expires) && now.Before(a.Grant.Expires)
+			ok = exists && now.Before(a.Expires) && now.Before(a.Grant.Expires) && s.grantAlive(a.Grant)
+			if ok {
+				client = a.Grant.Client
+			}
 			s.mu.Unlock()
 		}
 		if !ok {
@@ -205,6 +237,14 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 			oauthError(w, 401, "invalid_token")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), clientContextKey{}, client)))
 	})
+}
+
+type clientContextKey struct{}
+
+// ClientFromContext names the authenticated chat client (chatgpt or claude).
+func ClientFromContext(ctx context.Context) string {
+	client, _ := ctx.Value(clientContextKey{}).(string)
+	return client
 }

@@ -17,12 +17,12 @@ func validChallenge(c string) bool {
 
 func (s *Server) clientForm(w http.ResponseWriter, r *http.Request) (url.Values, bool) {
 	if r.Method != http.MethodPost {
-		oauthError(w, 405, "invalid_request")
+		oauthFail(w, r, 405, "invalid_request", "token endpoint accepts only POST")
 		return nil, false
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		oauthError(w, 400, "invalid_request")
+		oauthFail(w, r, 400, "invalid_request", "cannot parse token form")
 		return nil, false
 	}
 	f := r.PostForm // Never accept credentials in query strings.
@@ -32,13 +32,13 @@ func (s *Server) clientForm(w http.ResponseWriter, r *http.Request) (url.Values,
 		bi, e1 = url.QueryUnescape(bi)
 		bs, e2 = url.QueryUnescape(bs)
 		if secret != "" || e1 != nil || e2 != nil || (id != "" && id != bi) {
-			oauthError(w, 400, "invalid_request")
+			oauthFail(w, r, 400, "invalid_request", "conflicting client credentials in Authorization header and form")
 			return nil, false
 		}
 		id, secret = bi, bs
 	}
 	if id != s.ClientID || !same(secret, s.ClientSecret) {
-		oauthError(w, 401, "invalid_client")
+		oauthFail(w, r, 401, "invalid_client", "client_id or client_secret does not match PC_MCP_OAUTH_CLIENT_ID / PC_MCP_OAUTH_CLIENT_SECRET")
 		return nil, false
 	}
 	return f, true
@@ -50,11 +50,11 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if f.Get("resource") != s.resource() {
-		oauthError(w, 400, "invalid_target")
+		oauthFail(w, r, 400, "invalid_target", "resource must be "+s.resource()+"")
 		return
 	}
 	if scope := f.Get("scope"); scope != "" && scope != Scope {
-		oauthError(w, 400, "invalid_scope")
+		oauthFail(w, r, 400, "invalid_scope", "scope must be "+Scope+"")
 		return
 	}
 	s.mu.Lock()
@@ -62,6 +62,8 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	s.prune()
 	var g *grant
 	var consumed [32]byte
+	var codeExpires time.Time
+	used := [][32]byte{}
 	switch f.Get("grant_type") {
 	case "authorization_code":
 		verifier := f.Get("code_verifier")
@@ -76,12 +78,17 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if !exists || !verifierPattern.MatchString(verifier) || !same(c.Challenge, challenge(verifier)) || f.Get("redirect_uri") != s.RedirectURI {
-			oauthError(w, 400, "invalid_grant")
+		if !exists || !verifierPattern.MatchString(verifier) || !same(c.Challenge, challenge(verifier)) || f.Get("redirect_uri") != c.RedirectURI {
+			oauthFail(w, r, 400, "invalid_grant", "authorization code is unknown, expired (1 minute) or used, or code_verifier/redirect_uri does not match")
+			return
+		}
+		if len(s.access) >= 100 || len(s.refresh) >= 100 {
+			oauthError(w, 429, "temporarily_unavailable")
 			return
 		}
 		consumed = hash(f.Get("code"))
-		g = &grant{Expires: time.Now().Add(7 * 24 * time.Hour)}
+		codeExpires = c.Expires
+		g = &grant{ID: newGrantID(), Client: clientKey(c.RedirectURI), Expires: time.Now().Add(7 * 24 * time.Hour)}
 	case "refresh_token":
 		consumed = hash(f.Get("refresh_token"))
 		g = s.refresh[consumed]
@@ -89,35 +96,45 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 			if replay := s.usedRefresh[consumed]; replay != nil {
 				s.revokeGrant(replay)
 			}
-			oauthError(w, 400, "invalid_grant")
+			oauthFail(w, r, 400, "invalid_grant", "refresh token is unknown, rotated or revoked; connect again")
 			return
 		}
-	default:
-		oauthError(w, 400, "unsupported_grant_type")
-		return
-	}
-	if f.Get("grant_type") == "authorization_code" && (len(s.access) >= 100 || len(s.refresh) >= 100) {
-		oauthError(w, 429, "temporarily_unavailable")
-		return
-	}
-	if f.Get("grant_type") == "refresh_token" {
+		if !s.grantAlive(g) {
+			oauthFail(w, r, 400, "invalid_grant", "connection was revoked: its file in the OAuth state directory was deleted")
+			return
+		}
 		if len(s.usedRefresh) >= 1024 {
 			oauthError(w, 429, "temporarily_unavailable")
 			return
 		}
-		s.usedRefresh[consumed] = g
-		s.removeGrant(g) // Atomic rotation, including the previous access token.
-	} else {
-		if s.AuthMode == "client-secret" {
-			c, _ := s.openClientCode(f.Get("code"))
-			s.consumed[consumed] = c.Expires
+		used = append(append(used, g.used...), consumed)
+		if len(used) > maxUsedRefresh {
+			used = used[len(used)-maxUsedRefresh:]
 		}
-		delete(s.codes, consumed)
+	default:
+		oauthFail(w, r, 400, "unsupported_grant_type", "grant_type must be authorization_code or refresh_token")
+		return
 	}
 	a, refresh := random(), random()
 	expires := time.Now().Add(time.Hour)
 	if g.Expires.Before(expires) {
 		expires = g.Expires
+	}
+	// Persist before changing memory: a failed write keeps the previous
+	// refresh token or the authorization code usable for a retry.
+	if err := s.saveGrant(g, hash(a), expires, hash(refresh), used); err != nil {
+		oauthError(w, 500, "server_error")
+		return
+	}
+	if f.Get("grant_type") == "refresh_token" {
+		s.usedRefresh[consumed] = g
+		g.used = used
+		s.removeGrant(g) // Atomic rotation, including the previous access token.
+	} else {
+		if s.AuthMode == "client-secret" {
+			s.consumed[consumed] = codeExpires
+		}
+		delete(s.codes, consumed)
 	}
 	s.access[hash(a)] = access{Grant: g, Expires: expires}
 	s.refresh[hash(refresh)] = g
@@ -139,6 +156,7 @@ func (s *Server) removeGrant(g *grant) {
 
 func (s *Server) revokeGrant(g *grant) {
 	s.removeGrant(g)
+	s.deleteGrantFile(g)
 	for k, v := range s.usedRefresh {
 		if v == g {
 			delete(s.usedRefresh, k)
