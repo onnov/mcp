@@ -36,17 +36,17 @@ func TestSelectionRestoresBranchHistoryAndReadonlyRecovery(t *testing.T) {
 	})
 	s := &Service{GitHub: g, Preferences: prefs}
 	ctx := identity.With(context.Background(), &identity.Principal{UserID: 42, GitHubToken: "secret", Expires: time.Now().Add(time.Hour)})
-	first, e := s.Select(ctx, "owner", "repo", "")
+	first, e := s.Select(ctx, "", "owner", "repo", "")
 	if e != nil || first.Selection.Branch != "main" {
 		t.Fatalf("main preference: %+v %v", first, e)
 	}
-	if _, e := s.Select(ctx, "owner", "repo", "feature"); e != nil {
+	if _, e := s.Select(ctx, "", "owner", "repo", "feature"); e != nil {
 		t.Fatal(e)
 	}
 	if e := prefs.Set(42, preferences.Selection{Owner: "other", Repo: "repo", Branch: "main", RepositoryID: 11}); e != nil {
 		t.Fatal(e)
 	}
-	back, e := s.Select(ctx, "owner", "repo", "")
+	back, e := s.Select(ctx, "", "owner", "repo", "")
 	if e != nil || back.Selection.Branch != "feature" {
 		t.Fatalf("per-repository history: %+v %v", back, e)
 	}

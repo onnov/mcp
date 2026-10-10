@@ -3,13 +3,19 @@ package tools
 
 import "github.com/onnov/mcp/internal/github"
 
-type Empty struct{}
+// Every input embeds ChatInput exactly once, directly or through ReadRepo or
+// WriteRepo, so each tool accepts chat.
+type Empty struct {
+	ChatInput
+}
 type ReadRepo struct {
-	Owner string `json:"owner,omitempty" jsonschema:"GitHub owner; omit together with repo to use the saved selection"`
+	ChatInput
+	Owner string `json:"owner,omitempty" jsonschema:"GitHub owner; omit together with repo to use this chat's repository"`
 	Repo  string `json:"repo,omitempty" jsonschema:"Repository name, not a URL"`
 }
 type WriteRepo struct {
-	Owner string `json:"owner" jsonschema:"Explicit GitHub owner; writes never infer this from another chat"`
+	ChatInput
+	Owner string `json:"owner" jsonschema:"Explicit GitHub owner; writes never infer this from a saved selection"`
 	Repo  string `json:"repo" jsonschema:"Explicit repository name"`
 }
 type Pagination struct {
@@ -21,6 +27,7 @@ type RepoPageInput struct {
 	Pagination
 }
 type QueryInput struct {
+	ChatInput
 	Query string `json:"query,omitempty"`
 	Pagination
 }
@@ -135,6 +142,7 @@ type SearchInput struct {
 	Query string `json:"query"`
 }
 type CreateRepoInput struct {
+	ChatInput
 	Name         string `json:"name"`
 	Organization string `json:"organization,omitempty"`
 	Description  string `json:"description,omitempty"`
