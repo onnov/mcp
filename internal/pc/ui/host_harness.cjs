@@ -55,9 +55,11 @@ function harness(t, file, initial, handlers = {}, options = {}) {
     if (msg.method === 'ui/notifications/initialized') {
       // Follow the real handshake: input/result arrive after initialize's reply
       // and the View-ready notification, rather than inside ui/initialize.
-      if (initial && options.deliverInitial !== false) queueMicrotask(() => {
+      // initialDelayMs models hosts (Claude) that deliver after the card started.
+      const later = options.initialDelayMs ? fn => setTimeout(fn, options.initialDelayMs) : queueMicrotask;
+      if (initial && options.deliverInitial !== false) later(() => {
         dispatch('message', {source: parent, data: {jsonrpc: '2.0',
-          method: 'ui/notifications/tool-input', params: {arguments: initial.structuredContent?.request || {}}}});
+          method: 'ui/notifications/tool-input', params: {arguments: options.toolInput || initial.structuredContent?.request || {}}}});
         emitResult(initial);
       });
     }

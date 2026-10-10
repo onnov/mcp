@@ -23,6 +23,9 @@ type ChatInput struct {
 
 const chatMetaKey = "pc_chat"
 
+// noChat is sent by cards without a known key; it never issues a new one.
+const noChat = "none"
+
 var chatKeyPattern = regexp.MustCompile(`^c_[0-9a-f]{32}$`)
 
 type chatContextKey struct{}
@@ -80,6 +83,10 @@ func chatMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 		}
 		_ = json.Unmarshal(req.Params.Arguments, &args)
 		chat := ""
+		if args.Chat == noChat {
+			// A card that never learned its chat key: shared session, no new key.
+			return next(ctx, method, request)
+		}
 		if chatKeyPattern.MatchString(args.Chat) {
 			chat = args.Chat
 		} else if args.Chat != "" {

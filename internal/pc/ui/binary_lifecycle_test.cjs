@@ -32,7 +32,7 @@ test('built 1.1.8 binary renders stdout and stderr via its embedded approval bri
  assert.equal(caps.server_version,'1.1.8');assert.equal(caps.tool_schema_version,6);
  const tools=await rpc('tools/list',{});
  const uri=tools.tools.find(x=>x.name==='pc_request_run')._meta.ui.resourceUri;
- assert.equal(uri,'ui://pc-mcp/approve-v11.html');assert.equal(caps.approval_uri,uri);
+ assert.equal(uri,'ui://pc-mcp/approve-v12.html');assert.equal(caps.approval_uri,uri);
  const resource=await rpc('resources/read',{uri});const html=resource.contents[0].text;
  assert.equal(crypto.createHash('sha256').update(html).digest('hex'),caps.approval_html_sha256);
  const initial=await call('pc_request_run',{directory:'.',branch:'',purpose:'smoke',seconds:30,

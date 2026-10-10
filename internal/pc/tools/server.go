@@ -282,9 +282,9 @@ func New(ws *workspace.Service, jm *jobs.Manager, options ...Options) *mcp.Serve
 		// The first script is the bridge; the flag must exist before it runs.
 		return strings.Replace(html, "<script>", "<script>window.PC_DEBUG_CONTEXT=true;", 1)
 	}
-	for _, r := range []struct{ uri, name, html string }{{ui.PickerURI, "workspace-picker", ui.Picker}, {ui.LegacyPickerURI, "workspace-picker-legacy", ui.Picker}, {ui.PreviousPickerURI, "workspace-picker-v6", ui.Picker}, {ui.OlderPickerURI, "workspace-picker-v5", ui.Picker}, {ui.OldestPickerURI, "workspace-picker-v4", ui.Picker}, {ui.ApprovalURI, "command-confirmation", ui.Approval}, {ui.PreviousApprovalURI, "command-confirmation-v10", ui.Approval}, {ui.OlderApprovalURI, "command-confirmation-v9", ui.Approval}, {ui.OldestApprovalURI, "command-confirmation-v8", ui.Approval}, {ui.EarlierApprovalURI, "command-confirmation-v7", ui.Approval}, {ui.LegacyApprovalURI, "command-confirmation-legacy", ui.Approval}} {
+	for _, r := range []struct{ uri, name, html string }{{ui.PickerURI, "workspace-picker", ui.Picker}, {ui.PreviousPickerURI, "workspace-picker-previous", ui.Picker}, {ui.ApprovalURI, "command-confirmation", ui.Approval}, {ui.PreviousApprovalURI, "command-confirmation-previous", ui.Approval}} {
 		meta := mcp.Meta{"ui": map[string]any{"prefersBorder": true, "csp": map[string]any{"connectDomains": []string{}, "resourceDomains": []string{}}}, "openai/ui": map[string]any{"availableDisplayModes": []string{"inline", "fullscreen"}}}
-		if r.uri == ui.PickerURI || r.uri == ui.LegacyPickerURI || r.uri == ui.PreviousPickerURI || r.uri == ui.OlderPickerURI || r.uri == ui.OldestPickerURI {
+		if r.html == ui.Picker {
 			meta["openai/widgetDescription"] = "Interactive PC workspace browser: open nested folders, use clickable ancestor breadcrumbs, filter names, select a directory and its current/existing/new Git branch. The selection is bound to the current chat; a new chat is prefilled from the global last workspace and can accept it by simply closing the card. Let the user change it in this card when needed."
 		}
 		s.AddResource(&mcp.Resource{URI: r.uri, Name: r.name, MIMEType: ui.MIMEType, Meta: meta}, func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {

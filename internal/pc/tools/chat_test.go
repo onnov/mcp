@@ -110,6 +110,9 @@ func TestChatKeyScopesClientsWithoutSessionMetadata(t *testing.T) {
 	}
 	call(nil, "pc_list_jobs", map[string]any{"chat": k2})
 
+	if out, r := call(nil, "pc_get_workspace", map[string]any{"chat": "none"}); out.Chat != "" || r.Meta[chatMetaKey] != nil {
+		t.Fatal("a card without a key must not mint a new chat", out, r.Meta)
+	}
 	if r, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "pc_get_workspace", Arguments: map[string]any{"chat": "forged"}}); err == nil && !r.IsError {
 		t.Fatal("malformed chat key accepted")
 	}

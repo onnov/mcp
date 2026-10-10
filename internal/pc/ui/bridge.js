@@ -27,14 +27,22 @@
   if (text) return JSON.parse(text);
   throw Error('Нет результата');
  }
- function remember(result) {
-  const key = result?._meta?.pc_chat || result?.structuredContent?.chat;
-  if (typeof key === 'string' && key) chat = key;
+ // The first key wins: it comes from the model's own call that rendered this
+ // card (tool input, then result). Later results cannot move the card to
+ // another chat.
+ function rememberKey(key) {
+  if (!chat && typeof key === 'string' && /^c_[0-9a-f]{32}$/.test(key)) chat = key;
  }
+ function remember(result) {
+  rememberKey(result?._meta?.pc_chat);
+  rememberKey(result?.structuredContent?.chat);
+ }
+ const waiters = new Set();
  function deliver(result) {
   remember(result);
   last = result;
   for (const fn of listeners) fn(result);
+  for (const fn of waiters) fn();
  }
  window.addEventListener('message', e => {
   if (e.source !== parent || e.data?.jsonrpc !== '2.0') return;
@@ -56,12 +64,15 @@
    parent.postMessage({jsonrpc: '2.0', id: m.id, result: {}}, '*');
    return;
   }
+  if (!closed && m.method === 'ui/notifications/tool-input') rememberKey(m.params?.arguments?.chat);
   if (!closed && m.method === 'ui/notifications/tool-result') deliver(m.params);
  });
  window.PC = {
   rpc, notify, decode, version,
   tool: async (name, args = {}) => {
-   if (chat && args.chat === undefined) args = {...args, chat};
+   // Without a key the card must not get a new one: "none" keeps the
+   // shared session instead of starting an orphan chat binding.
+   if (args.chat === undefined) args = {...args, chat: chat || 'none'};
    try {
     const result = await rpc('tools/call', {name, arguments: args});
     remember(result);
@@ -74,6 +85,13 @@
      {code: e.code, rpcID: e.rpcID});
    }
   },
+  // Hosts may deliver the rendering tool's result after the handshake. Wait
+  // for it (bounded) before a card makes its own calls.
+  settle: ms => last ? Promise.resolve(last) : new Promise(resolve => {
+   const done = () => {waiters.delete(done); clearTimeout(timer); resolve(last);};
+   const timer = setTimeout(done, ms);
+   waiters.add(done);
+  }),
   onResult: fn => {listeners.add(fn); if (last) fn(last); return () => listeners.delete(fn);},
   onTeardown: fn => {teardownListeners.add(fn); return () => teardownListeners.delete(fn);},
   ready: async () => {

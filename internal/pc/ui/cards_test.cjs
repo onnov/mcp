@@ -224,3 +224,41 @@ test('a key issued to the card itself reaches the model context', async t => {
   assert.match(context.params.content[0].text, new RegExp(key));
   h.destroy();
 });
+
+test('picker waits for a late tool result and applies the choice to the rendering chat', async t => {
+  const key = 'c_00112233445566778899aabbccddeeff';
+  const bound = {available: true, remembered: true, session_bound: true, directory: 'AI/srt', branch: 'main', git: true, branches: ['main'], chat: key};
+  const target = {available: true, directory: 'AI/mcp', branch: 'dev', git: true, branches: ['dev'], dirty: false};
+  const calls = [];
+  const record = (name, result) => args => {calls.push({name, args}); return result;};
+  const h = harness(t, 'picker.html', {structuredContent: {chat: key, selection: bound, directories: {entries: [], next_offset: -1}, browser_path: 'AI'},
+    _meta: {pc_chat: key}}, {
+    pc_get_workspace: record('pc_get_workspace', {...bound, chat: 'c_ffffffffffffffffffffffffffffffff', session_bound: false}),
+    pc_open_workspace_picker: record('pc_open_workspace_picker', {selection: bound}),
+    pc_list_directory: record('pc_list_directory', {entries: [], next_offset: -1}),
+    pc_inspect_workspace: record('pc_inspect_workspace', target),
+    pc_select_workspace: record('pc_select_workspace', {...target, session_bound: true})
+  }, {initialDelayMs: 300, toolInput: {chat: key}});
+  await until(() => calls.some(c => c.name === 'pc_list_directory'));
+  assert.equal(calls.some(c => c.name === 'pc_get_workspace' || c.name === 'pc_open_workspace_picker'), false,
+    'the card must use the delivered selection instead of starting its own chat');
+  h.get('search').value = '';
+  await h.get('candidate').onclick();
+  await h.get('apply').onclick();
+  const select = calls.find(c => c.name === 'pc_select_workspace');
+  assert.ok(select, 'apply calls pc_select_workspace');
+  for (const c of calls) assert.equal(c.args.chat, key, c.name + ' must stay in the rendering chat');
+  h.destroy();
+});
+
+test('a card that never learns its chat key does not mint a new one', async t => {
+  const seen = [];
+  const h = harness(t, 'picker.html', undefined, {
+    pc_get_workspace: args => {seen.push(args); return {available: true, session_bound: true, directory: 'p', branch: '', git: false, branches: []};},
+    pc_list_directory: args => {seen.push(args); return {entries: [], next_offset: -1};}
+  });
+  for (let i = 0; i < 100 && seen.length < 2; i++) await new Promise(r => setTimeout(r, 50)); // settle waits 3 s
+  assert.ok(seen.length >= 2);
+  for (const args of seen) assert.equal(args.chat, 'none');
+  h.destroy();
+});

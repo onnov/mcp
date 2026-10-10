@@ -157,7 +157,7 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	if r := callChat("chat-a", "pc_write_file", map[string]any{"directory": "AI", "branch": "", "path": "wrong.txt", "text": "x", "expected_revision": "new"}); !r.IsError {
 		t.Fatal("chat-scoped target guard accepted a different directory")
 	}
-	for _, uri := range []string{ui.PickerURI, ui.PreviousPickerURI, ui.OlderPickerURI, ui.OldestPickerURI, ui.LegacyPickerURI} {
+	for _, uri := range []string{ui.PickerURI, ui.PreviousPickerURI} {
 		resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
 		if e != nil {
 			t.Fatal("directory picker resource unavailable", uri, e)
@@ -166,7 +166,7 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 			t.Fatal("cached or current picker URI did not return the latest interactive UI", uri)
 		}
 	}
-	for _, uri := range []string{ui.ApprovalURI, ui.PreviousApprovalURI, ui.OlderApprovalURI, ui.OldestApprovalURI, ui.EarlierApprovalURI, ui.LegacyApprovalURI} {
+	for _, uri := range []string{ui.ApprovalURI, ui.PreviousApprovalURI} {
 		resource, e := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
 		if e != nil {
 			t.Fatal("approval resource unavailable", uri, e)

@@ -148,6 +148,7 @@ small{opacity:.75}[hidden]{display:none!important}.error{color:#e44}button:focus
  PC.onResult(result=>{initial=result});
  try{
   await PC.ready();
+  await PC.settle(3000);
   const data=initial?.structuredContent;
   let selected=data?.selection||await PC.tool('pc_get_workspace');
   if(selected.available!==false&&selected.session_bound===false){
