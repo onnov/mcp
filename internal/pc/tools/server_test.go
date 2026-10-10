@@ -135,8 +135,11 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 		return info
 	}
 	chatA := decodeInfo(callChat("chat-a", "pc_get_workspace", map[string]any{}))
-	if chatA.SessionBound {
-		t.Fatal("new chat must not inherit global workspace as an accepted binding", chatA)
+	if !chatA.SessionBound || chatA.Directory != deep || !strings.Contains(chatA.Message, "just bound") {
+		t.Fatal("a new chat must be bound to the last used workspace on its first call", chatA)
+	}
+	if again := decodeInfo(callChat("chat-a", "pc_get_workspace", map[string]any{})); strings.Contains(again.Message, "just bound") {
+		t.Fatal("only the first call reports the automatic binding", again)
 	}
 	boundResult := callChat("chat-a", "pc_open_workspace_picker", map[string]any{})
 	if boundResult.IsError {
@@ -150,9 +153,12 @@ func TestMCPToolsAndPrivateApprovalMetadata(t *testing.T) {
 	if !boundPicker.Selection.SessionBound || boundPicker.Selection.Directory != deep {
 		t.Fatal("picker did not bind default workspace to chat-a", boundPicker.Selection)
 	}
+	if r := callChat("chat-first-call", "pc_list_jobs", map[string]any{}); r.IsError {
+		t.Fatal("any first call must bind the chat instead of failing", r.Content)
+	}
 	chatB := decodeInfo(callChat("chat-b", "pc_get_workspace", map[string]any{}))
-	if chatB.SessionBound {
-		t.Fatal("chat-b inherited chat-a binding", chatB)
+	if !chatB.SessionBound || chatB.Directory != deep {
+		t.Fatal("a new chat must start in the last used workspace", chatB)
 	}
 	if r := callChat("chat-a", "pc_write_file", map[string]any{"directory": "AI", "branch": "", "path": "wrong.txt", "text": "x", "expected_revision": "new"}); !r.IsError {
 		t.Fatal("chat-scoped target guard accepted a different directory")

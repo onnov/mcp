@@ -82,8 +82,8 @@ func TestChatKeyScopesClientsWithoutSessionMetadata(t *testing.T) {
 	}
 
 	first, r := call(nil, "pc_get_workspace", map[string]any{})
-	if !chatKeyPattern.MatchString(first.Chat) || r.Meta[chatMetaKey] != first.Chat || first.SessionBound {
-		t.Fatal("a new chat must get a key and no binding", first, r.Meta)
+	if !chatKeyPattern.MatchString(first.Chat) || r.Meta[chatMetaKey] != first.Chat || !first.SessionBound || first.Directory != "." {
+		t.Fatal("a new chat must get a key and be bound to the last used workspace", first, r.Meta)
 	}
 	k1 := first.Chat
 	picker, r := call(nil, "pc_open_workspace_picker", map[string]any{"chat": k1})
@@ -96,8 +96,8 @@ func TestChatKeyScopesClientsWithoutSessionMetadata(t *testing.T) {
 
 	second, _ := call(nil, "pc_get_workspace", map[string]any{})
 	k2 := second.Chat
-	if k2 == k1 || second.SessionBound {
-		t.Fatal("another conversation must get its own unbound key", second)
+	if k2 == k1 || !second.SessionBound {
+		t.Fatal("another conversation must get its own key, bound to the last used workspace", second)
 	}
 	if _, r := call(nil, "pc_select_workspace", map[string]any{"chat": k2, "directory": "proj", "branch": ""}); r.Meta[chatMetaKey] != k2 {
 		t.Fatal("card and model calls must echo the chat key", r.Meta)
@@ -107,6 +107,9 @@ func TestChatKeyScopesClientsWithoutSessionMetadata(t *testing.T) {
 	}
 	if two, _ := call(nil, "pc_get_workspace", map[string]any{"chat": k2}); two.Directory != "proj" || !two.SessionBound {
 		t.Fatal("second chat lost its own project", two)
+	}
+	if third, _ := call(nil, "pc_get_workspace", map[string]any{}); third.Directory != "proj" || !third.SessionBound {
+		t.Fatal("a new chat must start in the workspace chosen last", third)
 	}
 	call(nil, "pc_list_jobs", map[string]any{"chat": k2})
 

@@ -152,6 +152,24 @@ func (s *Service) SessionSelection(ctx context.Context, session string, bindDefa
 	return s.selectionLocked(ctx, binding.Target, true, true)
 }
 
+// BindDefault binds a chat that has no workspace yet to the last used
+// workspace (the global default), so every chat works in a definite directory
+// and branch from its first call. It reports whether it created the binding.
+func (s *Service) BindDefault(ctx context.Context, session string) (bool, error) {
+	if session == "" {
+		return false, nil
+	}
+	key := SessionKey(session)
+	s.mu.Lock()
+	_, bound := s.sessions[key]
+	s.mu.Unlock()
+	if bound {
+		return false, nil
+	}
+	info, err := s.SessionSelection(ctx, session, true)
+	return err == nil && info.SessionBound, err
+}
+
 func (s *Service) SelectSession(ctx context.Context, session string, t Target, create bool, base string) (Info, error) {
 	out, err := s.Select(ctx, t, create, base)
 	if err != nil || session == "" {

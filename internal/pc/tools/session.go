@@ -108,6 +108,34 @@ func chatMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 	}
 }
 
+type boundNowKey struct{}
+
+// boundNow reports that this call bound its chat to the default workspace.
+func boundNow(ctx context.Context) bool {
+	bound, _ := ctx.Value(boundNowKey{}).(bool)
+	return bound
+}
+
+// bindMiddleware binds an unbound chat to the last used workspace on its
+// first tool call, whichever tool that is. pc_select_workspace binds its own
+// explicit choice instead.
+func bindMiddleware(ws *workspace.Service) mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			req, ok := request.(*mcp.CallToolRequest)
+			if method != "tools/call" || !ok || req.Params == nil || req.Params.Name == "pc_select_workspace" {
+				return next(ctx, method, request)
+			}
+			if session := requestSession(ctx, req); session != "" {
+				if created, err := ws.BindDefault(ctx, session); err == nil && created {
+					ctx = context.WithValue(ctx, boundNowKey{}, true)
+				}
+			}
+			return next(ctx, method, request)
+		}
+	}
+}
+
 func sessionTarget(ctx context.Context, req *mcp.CallToolRequest, ws *workspace.Service) (string, workspace.Target, error) {
 	session := requestSession(ctx, req)
 	if session == "" {
