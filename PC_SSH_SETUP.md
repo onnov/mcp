@@ -142,6 +142,27 @@ OAuth выдаёт доступ одному владельцу ко всему 
 После обновления сервера обновите подключение плагина в ChatGPT для загрузки
 новых инструментов и UI; после перезапуска требуется новая OAuth-авторизация.
 
+## 6. Подключить в Claude (claude.ai, Desktop, мобильное приложение)
+
+Тот же сервер, тот же Client ID и Client Secret работают одновременно с ChatGPT.
+Callback'и Claude (`https://claude.ai/api/mcp/auth_callback` и
+`https://claude.com/api/mcp/auth_callback`) разрешены сервером всегда, отдельно
+настраивать их не нужно. OpenAI Tunnel в Claude не работает: нужен режим `ssh`
+или `http` с публичным HTTPS.
+
+- **Настройки → Коннекторы → Добавить свой коннектор**.
+- URL: `https://ВАШ-ДОМЕН/mcp` — точно так же, как в ChatGPT, с `/mcp` и без
+  `/` в конце, домен в нижнем регистре.
+- Аутентификация: **Use your own OAuth client** (в старом интерфейсе —
+  **Advanced settings**).
+- OAuth Client ID: значение `PC_MCP_OAUTH_CLIENT_ID` (по умолчанию `pc-mcp-chatgpt`).
+- OAuth Client Secret: значение `PC_MCP_OAUTH_CLIENT_SECRET`.
+
+DCR и CIMD сервер не поддерживает, поэтому без Client ID Claude подключиться не сможет.
+Настройки аутентификации коннектора в Claude менять нельзя: при ошибке удалите
+коннектор и добавьте заново. Если вход прерывается JSON с `invalid_request`,
+поле `error_description` называет параметр, который отклонён.
+
 ## Другие режимы
 
 - **OpenAI Tunnel:** `PC_MCP_TRANSPORT=tunnel`, прежние `CONTROL_PLANE_*`.

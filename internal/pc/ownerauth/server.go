@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,11 @@ import (
 )
 
 const Scope = "pc"
+
+// ClaudeRedirectURIs are the hosted Claude callbacks (claude.ai web, Desktop,
+// mobile). They are accepted alongside the configured ChatGPT callback, so one
+// owner client works with both. Each code stays bound to its own callback.
+var ClaudeRedirectURIs = []string{"https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback"}
 
 type Config struct {
 	PublicURL, ClientID, ClientSecret, RedirectURI, PasswordHash string
@@ -62,13 +68,13 @@ func HashPassword(password []byte) ([]byte, error) {
 }
 
 type pending struct {
-	State, Challenge string
-	Cookie           [32]byte
-	Expires          time.Time
+	State, Challenge, RedirectURI string
+	Cookie                        [32]byte
+	Expires                       time.Time
 }
 type code struct {
-	Challenge string
-	Expires   time.Time
+	Challenge, RedirectURI string
+	Expires                time.Time
 }
 type grant struct{ Expires time.Time }
 type access struct {
@@ -126,6 +132,9 @@ func oauthError(w http.ResponseWriter, status int, message string) {
 	jsonResponse(w, status, map[string]string{"error": message})
 }
 func (s *Server) resource() string { return s.PublicURL + "/mcp" }
+func (s *Server) allowedRedirect(uri string) bool {
+	return uri == s.RedirectURI || slices.Contains(ClaudeRedirectURIs, uri)
+}
 func (s *Server) prune() {
 	now := time.Now()
 	for k, expiry := range s.consumed {

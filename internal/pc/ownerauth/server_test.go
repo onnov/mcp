@@ -270,3 +270,39 @@ func TestBasicClientAuthenticationAndDeniedConsent(t *testing.T) {
 		t.Fatal("client_secret_basic failed")
 	}
 }
+
+func TestOwnerOAuthClaudeCallbackIsBoundToItsCode(t *testing.T) {
+	s, h := testServer(t)
+	claude := ClaudeRedirectURIs[0]
+	q := url.Values{"client_id": {s.ClientID}, "redirect_uri": {claude}, "response_type": {"code"}, "resource": {s.resource()}, "scope": {Scope}, "state": {"claude-state"}, "code_challenge": {challenge(strings.Repeat("v", 43))}, "code_challenge_method": {"S256"}}
+	w := request(h, "GET", "/oauth/authorize?"+q.Encode(), nil, nil)
+	if w.Code != 200 || !strings.Contains(w.Header().Get("Content-Security-Policy"), "form-action 'self' "+claude+";") || strings.Contains(w.Header().Get("Content-Security-Policy"), s.RedirectURI) {
+		t.Fatal("login CSP must allow only this request's callback", w.Code, w.Header().Get("Content-Security-Policy"))
+	}
+	if !strings.Contains(w.Body.String(), "Claude") || strings.Contains(w.Body.String(), "ChatGPT") {
+		t.Fatal("consent page must name the requesting client")
+	}
+	nonce := regexp.MustCompile(`name="request" value="([^"]+)"`).FindStringSubmatch(w.Body.String())[1]
+	w = request(h, "POST", "/oauth/login", url.Values{"request": {nonce}, "password": {testPassword}, "action": {"allow"}}, map[string]string{"Origin": s.PublicURL}, w.Result().Cookies()[0])
+	u, err := url.Parse(w.Header().Get("Location"))
+	if err != nil || w.Code != 303 || u.Scheme+"://"+u.Host+u.Path != claude || u.Query().Get("code") == "" || u.Query().Get("state") != "claude-state" {
+		t.Fatal(w.Code, u, err)
+	}
+	f := tokenForm(s, u.Query().Get("code"))
+	if w := request(h, "POST", "/oauth/token", f, nil); w.Code != 400 {
+		t.Fatal("code issued for Claude was exchanged with the ChatGPT callback")
+	}
+	f.Set("redirect_uri", claude)
+	tokens(t, request(h, "POST", "/oauth/token", f, nil))
+}
+
+func TestOwnerOAuthAuthorizeExplainsRejectedParameter(t *testing.T) {
+	s, h := testServer(t)
+	q := url.Values{"client_id": {s.ClientID}, "redirect_uri": {"https://evil.example/callback"}, "response_type": {"code"}, "resource": {s.resource()}, "state": {"s"}, "code_challenge": {challenge(strings.Repeat("v", 43))}, "code_challenge_method": {"S256"}}
+	w := request(h, "GET", "/oauth/authorize?"+q.Encode(), nil, nil)
+	var v map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &v)
+	if w.Code != 400 || v["error"] != "invalid_request" || !strings.Contains(v["error_description"], "redirect_uri") || w.Header().Get("Location") != "" {
+		t.Fatal(w.Code, w.Body.String())
+	}
+}

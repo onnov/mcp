@@ -76,7 +76,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if !exists || !verifierPattern.MatchString(verifier) || !same(c.Challenge, challenge(verifier)) || f.Get("redirect_uri") != s.RedirectURI {
+		if !exists || !verifierPattern.MatchString(verifier) || !same(c.Challenge, challenge(verifier)) || f.Get("redirect_uri") != c.RedirectURI {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
