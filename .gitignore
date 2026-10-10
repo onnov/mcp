@@ -50,3 +50,10 @@ node_modules/
 /github_mcp.stopped
 /github_mcp.lock/
 /github_mcp.log.1
+/github_mcp
+
+# Runtime files of github_mcp_start.sh / github_mcp_check.sh / github_mcp_stop.sh
+/github_mcp.pid
+/github_mcp.stopped
+/github_mcp.lock/
+/github_mcp.log.1
