@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,7 +31,7 @@ func httpHandler(cfg config.Config, server *mcp.Server) (http.Handler, error) {
 	// after the reverse proxy forwards it to this loopback listener.
 	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true})
 	mcpSlots := make(chan struct{}, 8)
-	mux.Handle("/mcp", auth.Protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var mcpHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case mcpSlots <- struct{}{}:
 			defer func() { <-mcpSlots }()
@@ -40,7 +41,17 @@ func httpHandler(cfg config.Config, server *mcp.Server) (http.Handler, error) {
 			return
 		}
 		transport.ServeHTTP(w, r)
-	})))
+	})
+	if cfg.DebugRequests {
+		path := filepath.Join(cfg.State, "debug", "mcp-requests.jsonl")
+		requests, err := newRequestLog(path)
+		if err != nil {
+			return nil, err
+		}
+		mcpHandler = requests.wrap(mcpHandler)
+		fmt.Fprintf(os.Stderr, "pc-mcp: request diagnostics enabled; writing %s\n", path)
+	}
+	mux.Handle("/mcp", auth.Protect(mcpHandler))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(405)

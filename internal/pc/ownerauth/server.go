@@ -3,6 +3,7 @@
 package ownerauth
 
 import (
+	"context"
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
@@ -207,12 +208,15 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 func (s *Server) Protect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Fields(r.Header.Get("Authorization"))
-		ok := false
+		ok, client := false, ""
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
 			s.mu.Lock()
 			a, exists := s.access[hash(parts[1])]
 			now := time.Now()
 			ok = exists && now.Before(a.Expires) && now.Before(a.Grant.Expires) && s.grantAlive(a.Grant)
+			if ok {
+				client = a.Grant.Client
+			}
 			s.mu.Unlock()
 		}
 		if !ok {
@@ -225,6 +229,14 @@ func (s *Server) Protect(next http.Handler) http.Handler {
 			oauthError(w, 401, "invalid_token")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), clientContextKey{}, client)))
 	})
+}
+
+type clientContextKey struct{}
+
+// ClientFromContext names the authenticated chat client (chatgpt or claude).
+func ClientFromContext(ctx context.Context) string {
+	client, _ := ctx.Value(clientContextKey{}).(string)
+	return client
 }
