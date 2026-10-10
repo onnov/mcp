@@ -87,12 +87,15 @@ func registerWorkspace(s *mcp.Server, d Services) {
 		out.Chat = chatFromContext(ctx)
 		return nil, out, e
 	})
-	s.AddResource(&mcp.Resource{URI: ui.URI, Name: "repository-picker", Title: "Репозиторий и ветка", MIMEType: ui.MIMEType, Meta: mcp.Meta{"ui": map[string]any{"prefersBorder": true, "csp": map[string]any{"connectDomains": []string{}, "resourceDomains": []string{}}}, "openai/ui": map[string]any{"availableDisplayModes": []string{"inline", "fullscreen"}}}}, func(ctx context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		if _, e := identity.Require(ctx); e != nil {
-			return nil, e
-		}
-		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: ui.URI, MIMEType: ui.MIMEType, Text: ui.HTML}}}, nil
-	})
+	// Only the current card and the previous one are served; both are the current HTML.
+	for _, r := range []struct{ uri, name string }{{ui.URI, "repository-picker"}, {ui.PreviousURI, "repository-picker-previous"}} {
+		s.AddResource(&mcp.Resource{URI: r.uri, Name: r.name, Title: "Репозиторий и ветка", MIMEType: ui.MIMEType, Meta: mcp.Meta{"ui": map[string]any{"prefersBorder": true, "csp": map[string]any{"connectDomains": []string{}, "resourceDomains": []string{}}}, "openai/ui": map[string]any{"availableDisplayModes": []string{"inline", "fullscreen"}}}}, func(ctx context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			if _, e := identity.Require(ctx); e != nil {
+				return nil, e
+			}
+			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: r.uri, MIMEType: ui.MIMEType, Text: ui.HTML}}}, nil
+		})
+	}
 	mentions := descriptor("search_repository_mentions", "Search repository mentions for the desktop composer. Returns resource links; use the full picker for paginated search and branch selection.", true, false, true)
 	mentions.Meta["openai/extensions"] = map[string]any{"mentions/search": map[string]any{}}
 	mcp.AddTool(s, mentions, func(ctx context.Context, _ *mcp.CallToolRequest, in MentionQuery) (*mcp.CallToolResult, Mentions, error) {

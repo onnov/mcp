@@ -30,21 +30,45 @@ button{cursor:pointer;background:var(--bg);border:1px solid var(--line);border-r
  const $ = id => document.getElementById(id);
  const state = {selection:null, repos:[], branches:[], repoNext:-1, branchNext:-1, repoEpoch:0, branchEpoch:0, selectionBusy:false, restoreEpoch:0, repoLoading:false, branchLoading:false};
  const pending = new Map(); let serial=0, initialized=false, initialResult=null;
+ // Server-issued chat key (clients without chat metadata, e.g. Claude): the
+ // card's own tool calls must stay in the chat that rendered it. The first key
+ // wins: it comes from the model's call that rendered this card (tool input,
+ // then result); later results cannot move the card to another chat.
+ let chat='', keySource='';
+ const received=[], waiters=new Set();
  const notify=(method,params)=>window.parent.postMessage({jsonrpc:'2.0',method,params},'*');
  function rpc(method,params){
   const id=++serial;
   return new Promise((resolve,reject)=>{
-   const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Нет ответа от ChatGPT. Откройте карточку заново.'));},60000);
+   const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Нет ответа от чата. Откройте карточку заново.'));},60000);
    pending.set(id,{resolve,reject,timer});window.parent.postMessage({jsonrpc:'2.0',id,method,params},'*');
   });
  }
+ function rememberKey(key,source){if(!chat&&typeof key==='string'&&/^c_[0-9a-f]{32}$/.test(key)){chat=key;keySource=source}}
+ function remember(result,source){
+  rememberKey(result?._meta?.ghf_chat,source+'._meta');
+  let data=result?.structuredContent;
+  // Some hosts pass only the text content; it is the same JSON.
+  if(!data)try{data=JSON.parse((result?.content||[]).find(x=>x.type==='text')?.text||'null')}catch{}
+  rememberKey(data?.chat,source+'.chat');rememberKey(data?.selection?.chat,source+'.selection.chat');
+ }
  async function tool(name,args={}){
+  // Without a key the card must not get a new one: "none" keeps the call out
+  // of any chat instead of starting an orphan binding.
+  if(args.chat===undefined)args={...args,chat:chat||'none'};
   const result=await rpc('tools/call',{name,arguments:args});
+  remember(result,name);
   if(result?.isError)throw new Error((result.content||[]).filter(x=>x.type==='text').map(x=>x.text).join('\n')||'Ошибка инструмента');
   if(result?.structuredContent)return result.structuredContent;
   const text=(result?.content||[]).find(x=>x.type==='text')?.text;
   if(text){try{return JSON.parse(text)}catch{throw new Error(text)}}
   throw new Error('Сервер не вернул данные');
+ }
+ // Operator diagnostics only (MCP_DEBUG_REQUESTS): which host messages arrived
+ // and where the chat key came from. Never sends the key or tool results.
+ function debug(event,extra={}){
+  if(!window.GHF_DEBUG_CONTEXT)return;
+  rpc('tools/call',{name:'ghf_debug_client_context',arguments:{context:{event,received:[...received],key_source:keySource||'none',has_key:!!chat,...extra}}}).catch(()=>{});
  }
  function status(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error);resize()}
  let lastHeight=0;
@@ -52,11 +76,18 @@ button{cursor:pointer;background:var(--bg);border:1px solid var(--line);border-r
  function toggled(kind,open){$(kind+'-popover').hidden=!open;$(kind+'-toggle').setAttribute('aria-expanded',String(open));if(open)$(kind+'-search').focus();resize()}
  function busy(value){state.selectionBusy=value;$('repo-toggle').disabled=value;$('branch-toggle').disabled=value||!state.selection;$('refresh').disabled=value}
  function updateLabels(){const s=state.selection;$('repo-label').textContent=s?s.owner+'/'+s.repo:'Выбрать репозиторий';$('branch-label').textContent=s?s.branch:'main';$('branch-toggle').disabled=!s||state.selectionBusy}
- async function publish(){
+ async function publish(chosen=false){
   if(!state.selection)return;
-  const s=state.selection;
-  // Explicit context is scoped to this app instance/chat. Credentials stay server-side.
-  await rpc('ui/update-model-context',{content:[{type:'text',text:'Selected GitHub repository: '+s.owner+'/'+s.repo+'; branch: '+s.branch+'. Use these explicit owner/repo/branch values for operations.'}],structuredContent:{githubSelection:s}});
+  const s=state.selection,where=s.owner+'/'+s.repo+'; branch: '+s.branch;
+  // A choice made here is authoritative for this chat: the model applies it
+  // with select_repository and its own chat key if the binding differs.
+  let text=chosen
+   ?'The user chose the GitHub repository for this chat in the picker card: '+where+'. Before any other work, if get_selection for this chat shows a different repository or branch, call select_repository with exactly owner='+s.owner+', repo='+s.repo+', branch='+s.branch+' and this chat key, then use these explicit values for every operation.'
+   :'GitHub repository for this chat: '+where+'. Use these explicit owner/repo/branch values for operations.';
+  if(chat)text+=' Pass chat="'+chat+'" in every call of this chat.';
+  const structuredContent={githubSelection:s,repositoryChosenInCard:chosen};
+  if(chat)structuredContent.chat=chat;
+  await rpc('ui/update-model-context',{content:[{type:'text',text}],structuredContent});
  }
  function render(kind){
   const box=$(kind+'-results');box.replaceChildren();box.setAttribute('aria-busy',String(state[kind+'Loading']));
@@ -96,8 +127,9 @@ button{cursor:pointer;background:var(--bg);border:1px solid var(--line);border-r
    if(!result.available)throw new Error(result.message||'Выбор недоступен');
    state.selection=result.selection;state.branchEpoch++;state.branches=[];state.branchNext=-1;
    $('branch-search').value='';updateLabels();toggled(kind,false);
-   status('Выбор сохранён для следующих чатов.');
-   try{await publish()}catch{status('Выбор сохранён. Контекст чата не обновился — укажите репозиторий в сообщении.',true)}
+   status('Выбор сохранён для этого чата; новые чаты начнут с него.');
+   try{await publish(true)}catch{status('Выбор сохранён. Контекст чата не обновился — укажите репозиторий в сообщении.',true)}
+   debug('apply');
    await load('branch');render('repo');
   }finally{busy(false);render('repo');render('branch')}
  }
@@ -115,18 +147,34 @@ button{cursor:pointer;background:var(--bg);border:1px solid var(--line);border-r
   state.repos=data.repositories?.repositories||[];state.repoNext=data.repositories?.next_page??-1;
   state.branches=data.branches?.branches||[];state.branchNext=data.branches?.next_page??-1;
   updateLabels();render('repo');render('branch');
-  status(state.selection?'Восстановлен последний выбор: '+state.selection.owner+'/'+state.selection.repo+' · '+state.selection.branch+(data.message?' · '+data.message:''):data.message||'Выберите репозиторий.');
+  status(state.selection?'Этот чат: '+state.selection.owner+'/'+state.selection.repo+' · '+state.selection.branch+(data.message?' · '+data.message:''):data.message||'Выберите репозиторий.');
   if(state.selection){try{await publish()}catch{status('Выбор восстановлен. Для работы укажите репозиторий в сообщении.',true)}}
+ }
+ function deliver(result){
+  remember(result,'tool-result');
+  if(!result?.structuredContent)return;
+  initialResult=result.structuredContent;
+  for(const fn of waiters)fn();
+  if(initialized&&!state.selectionBusy)restore(initialResult).catch(e=>status(e.message,true));
  }
  window.addEventListener('message',event=>{
   if(event.source!==window.parent||!event.data||event.data.jsonrpc!=='2.0')return;
   const msg=event.data;
-  if(msg.id!==undefined&&pending.has(msg.id)){const p=pending.get(msg.id);pending.delete(msg.id);clearTimeout(p.timer);msg.error?p.reject(new Error(msg.error.message||'Ошибка ChatGPT')):p.resolve(msg.result);return}
-  if(msg.method==='ui/notifications/tool-result'&&msg.params?.structuredContent){
-   initialResult=msg.params.structuredContent;
-   if(initialized&&!state.selectionBusy)restore(initialResult).catch(e=>status(e.message,true));
-  }
+  // A host request can reuse an outbound request ID: only responses resolve.
+  if(!msg.method&&msg.id!==undefined&&pending.has(msg.id)){const p=pending.get(msg.id);pending.delete(msg.id);clearTimeout(p.timer);msg.error?p.reject(new Error(msg.error.message||'Ошибка чата')):p.resolve(msg.result);return}
+  if(msg.method&&received.length<20)received.push(msg.method);
+  // Claude sends the model's call arguments (with chat) after the handshake.
+  if(msg.method==='ui/notifications/tool-input')rememberKey(msg.params?.arguments?.chat,'tool-input');
+  if(msg.method==='ui/notifications/tool-result')deliver(msg.params);
  });
+ // ChatGPT also exposes the rendering tool's result through window.openai.
+ function hydrate(){
+  const meta=window.openai?.toolResponseMetadata,output=window.openai?.toolOutput;
+  if(output)deliver({structuredContent:output,_meta:meta?._meta||meta});
+ }
+ // Hosts may deliver the rendering tool's result after the handshake. Wait for
+ // it (bounded) before the card makes its own calls.
+ const settle=ms=>initialResult?Promise.resolve():new Promise(resolve=>{const done=()=>{waiters.delete(done);clearTimeout(timer);resolve()};const timer=setTimeout(done,ms);waiters.add(done)});
  for(const kind of ['repo','branch']){
   $(kind+'-toggle').onclick=()=>{const open=$(kind+'-popover').hidden;toggled(kind,open);toggled(kind==='repo'?'branch':'repo',false);if(open)load(kind).catch(e=>status(e.message,true))};
   let timer;$(kind+'-search').oninput=()=>{clearTimeout(timer);state[kind+'Epoch']++;state[kind+'Loading']=true;render(kind);timer=setTimeout(()=>load(kind).catch(e=>status(e.message,true)),250)};
@@ -142,9 +190,16 @@ button{cursor:pointer;background:var(--bg);border:1px solid var(--line);border-r
  }
  $('refresh').onclick=async()=>{if(state.selectionBusy)return;busy(true);state.repoEpoch++;state.branchEpoch++;$('repo-search').value='';$('branch-search').value='';try{await restore()}catch(e){status(e.message,true)}finally{busy(false)}};
  async function start(){
-  await rpc('ui/initialize',{appInfo:{name:'ghf-repository-picker',version:'1.0.0'},appCapabilities:{},protocolVersion:'2026-01-26'});
-  notify('ui/notifications/initialized',{});initialized=true;await restore(initialResult);
+  const init=await rpc('ui/initialize',{appInfo:{name:'ghf-repository-picker',version:'2.0.0'},appCapabilities:{},protocolVersion:'2026-01-26'});
+  notify('ui/notifications/initialized',{});
+  if(window.GHF_DEBUG_CONTEXT)rpc('tools/call',{name:'ghf_debug_client_context',arguments:{context:{initialize:init,location_href:globalThis.location?.href,referrer:globalThis.document?.referrer}}}).catch(()=>{});
+  await settle(3000);
+  debug('settled',{has_result:!!initialResult});
+  initialized=true;await restore(initialResult);
  }
+ // Theme/layout updates carry no tool data; only a new tool output rehydrates.
+ window.addEventListener('openai:set_globals',event=>{const g=event.detail?.globals;if(g&&!Object.hasOwn(g,'toolOutput')&&!Object.hasOwn(g,'toolResponseMetadata'))return;hydrate()});
+ hydrate();
  start().catch(e=>status(e.message,true));
  if(window.ResizeObserver)new ResizeObserver(resize).observe(document.body);
 })();
