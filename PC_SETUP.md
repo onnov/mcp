@@ -288,13 +288,18 @@ development capability. Модель не должна считать label `tes
    sudo usermod -aG render "$USER"   # затем новый вход в систему
    grep Groups /proc/$(pgrep -xo pc-mcp)/status   # gid группы render в списке
    ```
-3. Включить и перезапустить сервер:
+3. Включить в конфиге сервера `~/.config/pc-mcp/server.env` (его читает
+   `scripts/run-pc-secure.sh`; при ручном запуске — в окружении процесса или флагом
+   `--allow-gpu`) и перезапустить сервер:
 
    ```bash
-   export PC_MCP_ALLOW_GPU=true                     # или флаг --allow-gpu
-   # export PC_MCP_GPU_DEVICE=/dev/dri/renderD128   # если render nodes несколько (iGPU + дискретная)
-   # export PC_MCP_GPU_CARD=true                    # только для KMS: вывод на экран без X/Wayland
+   PC_MCP_ALLOW_GPU=true
+   # PC_MCP_GPU_DEVICE=/dev/dri/renderD128   # если render nodes несколько (iGPU + дискретная)
+   # PC_MCP_GPU_CARD=true                    # только для KMS: вывод на экран без X/Wayland
    ```
+
+   Одной пересборки мало: без `PC_MCP_ALLOW_GPU=true` новый сервер показывает
+   `gpu_allowed: false`, и jobs по-прежнему не видят `/dev/dri`.
 
    Если render nodes несколько, `pc_capabilities` перечисляет их с PCI-адресом и
    драйвером; встроенное видеоядро Intel обычно `0000:00:02.0`.
