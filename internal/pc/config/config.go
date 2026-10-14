@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -35,6 +36,13 @@ type Config struct {
 	MaxJobs                                                int
 	PrivateNetwork, ConfirmCommands                        bool
 	HostNetwork                                            bool
+	// GPU exposes the integrated GPU (one DRM render node and its sysfs) to
+	// every job (PC_MCP_ALLOW_GPU); GPUDevice selects the node when the host
+	// has several (PC_MCP_GPU_DEVICE); GPUCard also exposes the primary
+	// card* node for KMS/display programs (PC_MCP_GPU_CARD).
+	GPU       bool
+	GPUDevice string
+	GPUCard   bool
 	// DebugRequests logs masked MCP request metadata to State/debug.
 	DebugRequests bool
 }
@@ -51,6 +59,17 @@ func Parse(args []string) (Config, error) {
 		return c, errors.New("PC_MCP_ALLOW_NETWORK must be true or false")
 	}
 	fs.BoolVar(&c.Network, "allow-network", network, "Permit per-job public network access through the egress proxy (with confirmation)")
+	gpu, err := strconv.ParseBool(env("PC_MCP_ALLOW_GPU", "false"))
+	if err != nil {
+		return c, errors.New("PC_MCP_ALLOW_GPU must be true or false")
+	}
+	fs.BoolVar(&c.GPU, "allow-gpu", gpu, "Operator opt-in: expose the GPU render node /dev/dri/renderD*, its read-only PCI sysfs and GPU runtime configs to every job")
+	fs.StringVar(&c.GPUDevice, "gpu-device", os.Getenv("PC_MCP_GPU_DEVICE"), "Render node for --allow-gpu, e.g. /dev/dri/renderD128; default: the only one")
+	gpuCard, err := strconv.ParseBool(env("PC_MCP_GPU_CARD", "false"))
+	if err != nil {
+		return c, errors.New("PC_MCP_GPU_CARD must be true or false")
+	}
+	fs.BoolVar(&c.GPUCard, "gpu-card", gpuCard, "With --allow-gpu also expose the primary /dev/dri/card* node of the same GPU (KMS/display programs)")
 	fs.BoolVar(&c.HostNetwork, "allow-host-network", false, "Operator opt-in for approved jobs with direct host network (localhost/LAN/VPN); default is isolated proxy")
 	fs.BoolVar(&c.PrivateNetwork, "allow-private-network", false, "Operator opt-in: proxy may reach localhost/LAN development services")
 	fs.BoolVar(&c.ConfirmCommands, "confirm-commands", false, "Require confirmation for every arbitrary command; default grants local RW development execution")
@@ -221,6 +240,12 @@ func Parse(args []string) (Config, error) {
 	if (c.PrivateNetwork || c.HostNetwork) && !c.Network {
 		return c, errors.New("allow-private-network requires allow-network")
 	}
+	if c.GPUDevice != "" && (!c.GPU || !gpuDevicePattern.MatchString(c.GPUDevice)) {
+		return c, errors.New("gpu-device requires allow-gpu and must be /dev/dri/renderD<N>")
+	}
+	if c.GPUCard && !c.GPU {
+		return c, errors.New("gpu-card requires allow-gpu")
+	}
 	if c.MaxSeconds < 1 || c.MaxSeconds > 86400 {
 		return c, errors.New("max-seconds must be 1..86400")
 	}
@@ -257,6 +282,8 @@ func Parse(args []string) (Config, error) {
 	}
 	return c, nil
 }
+
+var gpuDevicePattern = regexp.MustCompile(`^/dev/dri/renderD[0-9]+$`)
 
 func within(base, path string) bool {
 	if base == "" || path == "" {

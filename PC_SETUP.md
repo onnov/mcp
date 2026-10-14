@@ -260,6 +260,59 @@ Hooks/fsmonitor отключены для credential jobs. Обычные local 
 использовать project scripts/hooks/filters — это часть предоставленной RW
 development capability. Модель не должна считать label `test` безопасной командой.
 
+## Видеоядро (GPU)
+
+По умолчанию у jobs нет `/dev/dri` и `/sys`. Видеоядро открывает оператор
+настройкой сервера, а не job; что это добавляет к поверхности атаки,
+см. PC_SECURITY.md, «Доступ к видеоядру».
+
+1. Пакеты для встроенного видеоядра Intel (Ubuntu 24.04):
+
+   ```bash
+   sudo apt install intel-opencl-icd clinfo        # OpenCL (NEO), ICD в /etc/OpenCL/vendors
+   sudo apt install mesa-vulkan-drivers vulkan-tools   # Vulkan (anv), vulkaninfo
+   sudo apt install intel-media-va-driver-non-free vainfo   # VA-API: видео-кодеки (iHD)
+   sudo apt install libze1 libze-intel-gpu1        # Level Zero (oneAPI, OpenVINO, PyTorch XPU)
+   clinfo -l; vulkaninfo --summary; vainfo         # на хосте должно появиться устройство
+   ```
+
+   Mesa OpenGL/EGL (`libegl-mesa0`, `libgl1-mesa-dri`) обычно уже установлен.
+   Для AMD APU вместо пакетов Intel: `mesa-opencl-icd`/ROCm, `mesa-va-drivers`.
+   SDK вне `/usr` (например `/opt/intel/oneapi`) подключите через
+   `PC_MCP_TOOLCHAINS`.
+2. Права: пользователь сервера должен быть в группе `render` (и в `video`, если
+   нужен `card*`). ACL активного графического сеанса пропадает при выходе и
+   переключении сеанса, поэтому на него не полагайтесь.
+
+   ```bash
+   sudo usermod -aG render "$USER"   # затем новый вход в систему
+   grep Groups /proc/$(pgrep -xo pc-mcp)/status   # gid группы render в списке
+   ```
+3. Включить в конфиге сервера `~/.config/pc-mcp/server.env` (его читает
+   `scripts/run-pc-secure.sh`; при ручном запуске — в окружении процесса или флагом
+   `--allow-gpu`) и перезапустить сервер:
+
+   ```bash
+   PC_MCP_ALLOW_GPU=true
+   # PC_MCP_GPU_DEVICE=/dev/dri/renderD128   # если render nodes несколько (iGPU + дискретная)
+   # PC_MCP_GPU_CARD=true                    # только для KMS: вывод на экран без X/Wayland
+   ```
+
+   Одной пересборки мало: без `PC_MCP_ALLOW_GPU=true` новый сервер показывает
+   `gpu_allowed: false`, и jobs по-прежнему не видят `/dev/dri`.
+
+   Если render nodes несколько, `pc_capabilities` перечисляет их с PCI-адресом и
+   драйвером; встроенное видеоядро Intel обычно `0000:00:02.0`.
+4. Проверить: `pc_capabilities` показывает `gpu_allowed: true`, `gpu_device`,
+   `gpu_nodes`, `gpu_pci`, `gpu_pci_id`, `gpu_driver`, `gpu_sysfs`,
+   `gpu_configs`; при ошибке — `gpu_error` и `execution_ready: false`.
+   С хоста: `make test-pc-gpu` (в sandbox запускаются `clinfo -l`,
+   `vulkaninfo --summary` и `vainfo`, если установлены, и должны найти
+   устройство; `PC_MCP_GPU_CARD=true make test-pc-gpu` проверяет и `card*`).
+
+Кеши шейдеров и ядер (Mesa, NEO) пишутся в `XDG_CACHE_HOME=/cache`, то есть в
+кеш проекта, и переживают перезапуск jobs.
+
 ## HTTP/OAuth и защита от перегрузки
 
 OAuth authorize flow зашифрован/подписан и stateless до успешной аутентификации:

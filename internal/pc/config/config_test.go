@@ -119,3 +119,48 @@ func TestTransportEnvironmentAndSSHBoundaries(t *testing.T) {
 		t.Fatal("stdio override no longer works", err)
 	}
 }
+
+func TestGPUSetting(t *testing.T) {
+	d := t.TempDir()
+	root := filepath.Join(d, "projects")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--root", root, "--state", filepath.Join(d, "state"), "--transport", "stdio"}
+	c, err := Parse(args)
+	if err != nil || c.GPU || c.GPUDevice != "" || c.GPUCard {
+		t.Fatal("GPU must be disabled by default", c.GPU, c.GPUCard, err)
+	}
+	if _, err = Parse(append(args, "--gpu-card")); err == nil {
+		t.Fatal("gpu-card without allow-gpu accepted")
+	}
+	t.Setenv("PC_MCP_ALLOW_GPU", "true")
+	if c, err = Parse(args); err != nil || !c.GPU || c.GPUCard {
+		t.Fatal("PC_MCP_ALLOW_GPU not applied", err)
+	}
+	if c, err = Parse(append(args, "--gpu-device", "/dev/dri/renderD129")); err != nil || c.GPUDevice != "/dev/dri/renderD129" {
+		t.Fatal("gpu-device not applied", err)
+	}
+	for _, device := range []string{"/dev/dri/card1", "/dev/dri/renderD128/../card1", "/dev/mem"} {
+		if _, err = Parse(append(args, "--gpu-device", device)); err == nil {
+			t.Fatal("non-render device accepted", device)
+		}
+	}
+	t.Setenv("PC_MCP_GPU_CARD", "true")
+	if c, err = Parse(args); err != nil || !c.GPUCard {
+		t.Fatal("PC_MCP_GPU_CARD not applied", err)
+	}
+	t.Setenv("PC_MCP_GPU_CARD", "maybe")
+	if _, err = Parse(args); err == nil {
+		t.Fatal("invalid PC_MCP_GPU_CARD accepted")
+	}
+	t.Setenv("PC_MCP_GPU_CARD", "")
+	t.Setenv("PC_MCP_ALLOW_GPU", "yes")
+	if _, err = Parse(args); err == nil {
+		t.Fatal("invalid PC_MCP_ALLOW_GPU accepted")
+	}
+	t.Setenv("PC_MCP_ALLOW_GPU", "")
+	if _, err = Parse(append(args, "--gpu-device", "/dev/dri/renderD128")); err == nil {
+		t.Fatal("gpu-device without allow-gpu accepted")
+	}
+}
