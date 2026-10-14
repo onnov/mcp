@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"github.com/onnov/mcp/internal/pc/egress"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -55,6 +57,10 @@ func checkVersion(p string) error {
 	return nil
 }
 func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) error {
+	gpu, err := e.gpu()
+	if err != nil {
+		return err
+	}
 	// Pass a pinned directory FD instead of checking a path and then reopening it.
 	dir, err := s.Root.Open(".")
 	if err != nil {
@@ -124,100 +130,7 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 			}
 		}
 	}
-	a := []string{"--die-with-parent", "--new-session", "--unshare-all", "--cap-drop", "ALL", "--clearenv"}
-	if s.HostNetwork {
-		a = append(a, "--share-net")
-	}
-
-	for _, p := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64"} {
-		if _, err := os.Stat(p); err == nil {
-			a = append(a, "--ro-bind", p, p)
-		}
-	}
-	for _, p := range e.Toolchains {
-		a = append(a, "--ro-bind", p, p)
-	}
-	a = append(a, "--proc", "/proc", "--dev", "/dev")
-	if e.TmpMaxBytes > 0 {
-		a = append(a, "--size", strconv.FormatInt(e.TmpMaxBytes, 10))
-	}
-	a = append(a, "--tmpfs", "/tmp", "--dir", "/home", "--dir", "/home/pc", "--dir", "/etc", "--dir", "/run")
-	for _, p := range []string{"/etc/ssl/certs", "/etc/ssl/openssl.cnf", "/etc/alternatives", "/etc/ld.so.cache", "/etc/localtime"} {
-		if _, err := os.Stat(p); err == nil {
-			a = append(a, "--ro-bind", p, p)
-		}
-	}
-	if s.Network {
-		for _, p := range []string{"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"} {
-			if _, err := os.Stat(p); err == nil {
-				a = append(a, "--ro-bind", p, p)
-			}
-		}
-	}
-	// Complete sandbox directory creation before binding untrusted project content.
-	a = append(a, "--dir", "/workspace", "--dir", "/cache", "--bind", "/proc/self/fd/4", "/cache", "--bind", "/proc/self/fd/3", "/workspace")
-	path := "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"
-	for _, p := range e.Toolchains {
-		path = filepath.Join(p, "bin") + ":" + path
-	}
-	vars := map[string]string{"PATH": path, "HOME": "/home/pc", "TMPDIR": "/tmp", "LANG": "C.UTF-8", "GOCACHE": "/cache/go-build", "GOMODCACHE": "/cache/go-mod", "GOPATH": "/cache/go", "GOTOOLCHAIN": "local", "GOTELEMETRY": "off", "XDG_CACHE_HOME": "/cache", "PIP_CACHE_DIR": "/cache/pip", "npm_config_cache": "/cache/npm", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0", "GH_CONFIG_DIR": "/home/pc/.config/gh", "GH_PROMPT_DISABLED": "1"}
-	if s.Network && !s.HostNetwork {
-		a = append(a, "--ro-bind", proxy.Directory, "/run/pc-mcp", "--ro-bind", e.HelperPath, "/pc-mcp-helper")
-		if gitSSH {
-			a = append(a,
-				"--ro-bind", e.SSHKeyFile, "/run/pc-mcp-ssh-key",
-				"--ro-bind", e.SSHKnownHosts, "/run/pc-mcp-ssh-known-hosts",
-				"--ro-bind", filepath.Join(proxy.Directory, "passwd"), "/etc/passwd",
-				"--ro-bind", filepath.Join(proxy.Directory, "group"), "/etc/group",
-				"--ro-bind", filepath.Join(proxy.Directory, "ssh_config"), "/run/pc-mcp-ssh-config",
-			)
-		}
-		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
-			vars[key] = "http://127.0.0.1:3128"
-		}
-		vars["NO_PROXY"] = ""
-		vars["no_proxy"] = ""
-	}
-	if s.Credential {
-		if s.Args[0] != "git" && s.Args[0] != "gh" {
-			return errors.New("credential jobs must invoke git or gh directly")
-		}
-		vars["GIT_ALLOW_PROTOCOL"] = "ssh:https"
-		if e.GHtoken != "" {
-			// Placeholder satisfies CLI login checks; the real token is added by the
-			// host proxy only for verified github.com/api.github.com HTTPS requests.
-			vars["GH_TOKEN"] = "pc-mcp-proxy-placeholder"
-			vars["GH_HOST"] = "github.com"
-			for _, key := range []string{"SSL_CERT_FILE", "GIT_SSL_CAINFO", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "npm_config_cafile"} {
-				vars[key] = "/run/pc-mcp/ca.pem"
-			}
-		}
-		if gitSSH {
-			vars["GIT_SSH_COMMAND"] = "ssh -F /run/pc-mcp-ssh-config"
-		}
-		vars["GIT_CONFIG_COUNT"] = "4"
-		vars["GIT_CONFIG_KEY_0"] = "credential.helper"
-		vars["GIT_CONFIG_VALUE_0"] = ""
-		vars["GIT_CONFIG_KEY_1"] = "credential.helper"
-		vars["GIT_CONFIG_VALUE_1"] = "!gh auth git-credential"
-		vars["GIT_CONFIG_KEY_2"] = "core.hooksPath"
-		vars["GIT_CONFIG_VALUE_2"] = "/dev/null"
-		vars["GIT_CONFIG_KEY_3"] = "core.fsmonitor"
-		vars["GIT_CONFIG_VALUE_3"] = "false"
-	}
-
-	for k, v := range vars {
-		a = append(a, "--setenv", k, v)
-	}
-	a = append(a, "--chdir", filepath.Join("/workspace", s.CWD), "--")
-	// bwrap deliberately passes inherited FDs to the payload. Close the pinned
-	// HOST directory FD before any untrusted command can fchdir through it.
-	// This constant shell wrapper does not evaluate user arguments.
-	wrapper := `exec 3<&-; exec 4<&-; exec "$@"`
-	if s.Network && !s.HostNetwork {
-		wrapper = `exec 3<&-; exec 4<&-; /pc-mcp-helper --job-proxy /run/pc-mcp/net.sock & n=0; while ! test -f /tmp/pc-mcp-proxy-ready; do n=$((n+1)); if test "$n" -ge 100; then echo 'network helper did not start' >&2; exit 125; fi; sleep 0.05; done; exec "$@"`
-	}
-	a = append(a, "/bin/sh", "-c", wrapper, "pc-mcp")
+	var prlimit []string
 	// Bound open FDs and single-file writes; CPU remains unrestricted.
 	if _, err := os.Stat("/usr/bin/prlimit"); err == nil {
 		limits := syscall.Rlimit{}
@@ -225,7 +138,7 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 			return err
 		}
 		nofile := min(uint64(4096), limits.Max)
-		a = append(a, "/usr/bin/prlimit", "--nofile="+strconv.FormatUint(nofile, 10)+":"+strconv.FormatUint(nofile, 10))
+		prlimit = append(prlimit, "/usr/bin/prlimit", "--nofile="+strconv.FormatUint(nofile, 10)+":"+strconv.FormatUint(nofile, 10))
 		{
 			free, _, err := diskAvailable(cache)
 			if err != nil {
@@ -239,11 +152,18 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 			if size <= 0 {
 				return errors.New("insufficient disk space after reserve")
 			}
-			a = append(a, "--fsize="+strconv.FormatInt(size, 10)+":"+strconv.FormatInt(size, 10))
+			prlimit = append(prlimit, "--fsize="+strconv.FormatInt(size, 10)+":"+strconv.FormatInt(size, 10))
 		}
-		a = append(a, "--")
+		prlimit = append(prlimit, "--")
 	}
-	a = append(a, s.Args...)
+	proxyDir := ""
+	if proxy != nil {
+		proxyDir = proxy.Directory
+	}
+	a, err := e.bwrapArgs(s, proxyDir, gitSSH, gpu, prlimit)
+	if err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, e.BwrapPath, a...)
 	cmd.ExtraFiles = []*os.File{dir, cacheFD}
 	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin"}
@@ -284,4 +204,110 @@ func (e *Engine) run(ctx context.Context, s Spec, stdout, stderr io.Writer) erro
 		}
 	}
 	return err
+}
+
+// bwrapArgs builds the bubblewrap argument list. With gpu == nil it is exactly
+// the GPU-less sandbox; TestBwrapArgsWithoutGPU pins that list.
+func (e *Engine) bwrapArgs(s Spec, proxyDir string, gitSSH bool, gpu *gpuMount, prlimit []string) ([]string, error) {
+	a := []string{"--die-with-parent", "--new-session", "--unshare-all", "--cap-drop", "ALL", "--clearenv"}
+	if s.HostNetwork {
+		a = append(a, "--share-net")
+	}
+
+	for _, p := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64"} {
+		if _, err := os.Stat(p); err == nil {
+			a = append(a, "--ro-bind", p, p)
+		}
+	}
+	for _, p := range e.Toolchains {
+		a = append(a, "--ro-bind", p, p)
+	}
+	a = append(a, "--proc", "/proc", "--dev", "/dev")
+	if e.TmpMaxBytes > 0 {
+		a = append(a, "--size", strconv.FormatInt(e.TmpMaxBytes, 10))
+	}
+	a = append(a, "--tmpfs", "/tmp", "--dir", "/home", "--dir", "/home/pc", "--dir", "/etc", "--dir", "/run")
+	for _, p := range []string{"/etc/ssl/certs", "/etc/ssl/openssl.cnf", "/etc/alternatives", "/etc/ld.so.cache", "/etc/localtime"} {
+		if _, err := os.Stat(p); err == nil {
+			a = append(a, "--ro-bind", p, p)
+		}
+	}
+	if s.Network {
+		for _, p := range []string{"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"} {
+			if _, err := os.Stat(p); err == nil {
+				a = append(a, "--ro-bind", p, p)
+			}
+		}
+	}
+	if gpu != nil {
+		a = append(a, gpu.args()...)
+	}
+	// Complete sandbox directory creation before binding untrusted project content.
+	a = append(a, "--dir", "/workspace", "--dir", "/cache", "--bind", "/proc/self/fd/4", "/cache", "--bind", "/proc/self/fd/3", "/workspace")
+	path := "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"
+	for _, p := range e.Toolchains {
+		path = filepath.Join(p, "bin") + ":" + path
+	}
+	vars := map[string]string{"PATH": path, "HOME": "/home/pc", "TMPDIR": "/tmp", "LANG": "C.UTF-8", "GOCACHE": "/cache/go-build", "GOMODCACHE": "/cache/go-mod", "GOPATH": "/cache/go", "GOTOOLCHAIN": "local", "GOTELEMETRY": "off", "XDG_CACHE_HOME": "/cache", "PIP_CACHE_DIR": "/cache/pip", "npm_config_cache": "/cache/npm", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0", "GH_CONFIG_DIR": "/home/pc/.config/gh", "GH_PROMPT_DISABLED": "1"}
+	if s.Network && !s.HostNetwork {
+		a = append(a, "--ro-bind", proxyDir, "/run/pc-mcp", "--ro-bind", e.HelperPath, "/pc-mcp-helper")
+		if gitSSH {
+			a = append(a,
+				"--ro-bind", e.SSHKeyFile, "/run/pc-mcp-ssh-key",
+				"--ro-bind", e.SSHKnownHosts, "/run/pc-mcp-ssh-known-hosts",
+				"--ro-bind", filepath.Join(proxyDir, "passwd"), "/etc/passwd",
+				"--ro-bind", filepath.Join(proxyDir, "group"), "/etc/group",
+				"--ro-bind", filepath.Join(proxyDir, "ssh_config"), "/run/pc-mcp-ssh-config",
+			)
+		}
+		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
+			vars[key] = "http://127.0.0.1:3128"
+		}
+		vars["NO_PROXY"] = ""
+		vars["no_proxy"] = ""
+	}
+	if s.Credential {
+		if s.Args[0] != "git" && s.Args[0] != "gh" {
+			return nil, errors.New("credential jobs must invoke git or gh directly")
+		}
+		vars["GIT_ALLOW_PROTOCOL"] = "ssh:https"
+		if e.GHtoken != "" {
+			// Placeholder satisfies CLI login checks; the real token is added by the
+			// host proxy only for verified github.com/api.github.com HTTPS requests.
+			vars["GH_TOKEN"] = "pc-mcp-proxy-placeholder"
+			vars["GH_HOST"] = "github.com"
+			for _, key := range []string{"SSL_CERT_FILE", "GIT_SSL_CAINFO", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "npm_config_cafile"} {
+				vars[key] = "/run/pc-mcp/ca.pem"
+			}
+		}
+		if gitSSH {
+			vars["GIT_SSH_COMMAND"] = "ssh -F /run/pc-mcp-ssh-config"
+		}
+		vars["GIT_CONFIG_COUNT"] = "4"
+		vars["GIT_CONFIG_KEY_0"] = "credential.helper"
+		vars["GIT_CONFIG_VALUE_0"] = ""
+		vars["GIT_CONFIG_KEY_1"] = "credential.helper"
+		vars["GIT_CONFIG_VALUE_1"] = "!gh auth git-credential"
+		vars["GIT_CONFIG_KEY_2"] = "core.hooksPath"
+		vars["GIT_CONFIG_VALUE_2"] = "/dev/null"
+		vars["GIT_CONFIG_KEY_3"] = "core.fsmonitor"
+		vars["GIT_CONFIG_VALUE_3"] = "false"
+	}
+
+	// Sorted for a deterministic, testable argument list.
+	for _, k := range slices.Sorted(maps.Keys(vars)) {
+		a = append(a, "--setenv", k, vars[k])
+	}
+	a = append(a, "--chdir", filepath.Join("/workspace", s.CWD), "--")
+	// bwrap deliberately passes inherited FDs to the payload. Close the pinned
+	// HOST directory FD before any untrusted command can fchdir through it.
+	// This constant shell wrapper does not evaluate user arguments.
+	wrapper := `exec 3<&-; exec 4<&-; exec "$@"`
+	if s.Network && !s.HostNetwork {
+		wrapper = `exec 3<&-; exec 4<&-; /pc-mcp-helper --job-proxy /run/pc-mcp/net.sock & n=0; while ! test -f /tmp/pc-mcp-proxy-ready; do n=$((n+1)); if test "$n" -ge 100; then echo 'network helper did not start' >&2; exit 125; fi; sleep 0.05; done; exec "$@"`
+	}
+	a = append(a, "/bin/sh", "-c", wrapper, "pc-mcp")
+	a = append(a, prlimit...)
+	a = append(a, s.Args...)
+	return a, nil
 }

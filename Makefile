@@ -1,4 +1,4 @@
-.PHONY: build build-pc test check fmt test-pc-sandbox
+.PHONY: build build-pc test check fmt test-pc-sandbox test-pc-gpu
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o github_public_mcp ./cmd/github-mcp
@@ -18,7 +18,11 @@ build-pc:
 	CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o pc-mcp ./cmd/pc-mcp
 
 test-pc-sandbox:
-	PC_MCP_REQUIRE_SANDBOX=1 go test -race ./internal/pc/sandbox -run 'TestLinuxSandboxIsolation|TestEscapedSessionDescendantsStop|TestStopAllCommands' -v
+	PC_MCP_REQUIRE_SANDBOX=1 go test -race ./internal/pc/sandbox -run 'TestLinuxSandboxIsolation|TestEscapedSessionDescendantsStop|TestStopAllCommands|TestNoGPUByDefault|TestGPURenderNodeInSandbox' -v
+
+# Host-only: requires a /dev/dri/renderD* node the current user can open.
+test-pc-gpu:
+	PC_MCP_REQUIRE_SANDBOX=1 PC_MCP_REQUIRE_GPU=1 go test -race ./internal/pc/sandbox -run 'TestNoGPUByDefault|TestGPURenderNodeInSandbox' -v
 
 
 # Populate module cache once with network, then run reproducible offline jobs.

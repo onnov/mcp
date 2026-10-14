@@ -93,11 +93,68 @@ OAuth всё равно нужен для права доступа. Secure MCP 
 | Подтверждение команд | `--confirm-commands`; network/credential jobs уже требуют отдельного подтверждения |
 | Ограничение исходящей сети | Default network disabled. `--allow-network` разрешает подтверждённые jobs через public HTTP(S) proxy, DNS/IP validation, 80/443, запрет private/loopback/link-local/reserved destinations |
 | LAN/VPN/localhost | `--allow-private-network` расширяет proxy; `--allow-host-network` + job `host_network:true` даёт прямой TCP/UDP. Включать по необходимости; host-network jobs не получают credential capability |
+| Видеоядро (GPU) | Default выключено. `PC_MCP_ALLOW_GPU=true` / `--allow-gpu` открывает **каждому** job один `/dev/dri/renderD*` и read-only sysfs этого PCI-устройства; `PC_MCP_GPU_CARD=true` добавляет `card*`; см. «Доступ к видеоядру» |
 | GitHub credentials | HTTPS: fine-grained `PC_MCP_GH_TOKEN` остаётся host-side и добавляется только для canonical GitHub HTTPS. SSH: только approved credential `git pull/push/fetch/clone/ls-remote`; `PC_MCP_SSH_KEY_FILE` и known_hosts монтируются read-only, egress ограничен `github.com:22`, protocols `ssh:https`; hooks/fsmonitor отключены |
 | HTTP perimeter | HTTPS, loopback listen, bounded sockets/request slots, Host/Origin/header/body/time limits; exact trusted proxy CIDRs, overwritten single X-Forwarded-For |
 | DDoS на внешнем канале | Hosting/WAF provider protection, per-IP requests/connections и timeouts на публичном proxy; пример `scripts/pc-proxy-nginx.conf.example`, Apache требует эквивалентных правил |
 | SSH tunnel | Проверенный known_hosts, private key 0600, remote bind localhost, GatewayPorts no, optional отдельный пользователь с PermitListen/remote-forwarding-only |
 | Независимая проверка | `make check-pc`, required sandbox/network integration, strict cgroup integration и явный AuditWorkspaceSecrets |
+
+## Доступ к видеоядру
+
+`PC_MCP_ALLOW_GPU=true` (или `--allow-gpu`) — настройка оператора, а не job.
+Если она включена, все jobs получают видеоядро, и отдельной карточки
+подтверждения для этого нет. `--unshare-all`, `--cap-drop ALL`, `--clearenv`,
+FD/fsize limits и cgroups остаются без изменений. Добавляются только:
+
+- `--dev-bind` одного render node (`/dev/dri/renderD128` или `PC_MCP_GPU_DEVICE`)
+  и ссылка `/dev/dri/by-path/pci-<pci>-render`. Через render node работают
+  OpenCL, Level Zero, Vulkan (graphics и compute), OpenGL/EGL без окна,
+  VA-API/QSV (аппаратное кодирование и декодирование видео);
+- read-only весь каталог sysfs этого PCI-устройства
+  (`/sys/devices/.../<pci>`: `vendor`, `device`, `revision`, `uevent`, `drm/*`,
+  частоты, engines, `hwmon`) и ссылки на него: `/sys/dev/char/226:N`,
+  `/sys/class/drm/<node>`, `/sys/bus/pci/devices/<pci>`. По ним libdrm
+  (`drmGetDevices2`), Mesa, NEO, Level Zero Sysman и VA-API находят устройство.
+  Остальной `/sys` (другие устройства, `/sys/kernel`, `/sys/module`,
+  `/sys/class/net`) в sandbox отсутствует. Root-only файлы устройства
+  (`resource*`, `rom`, `error`) остаются недоступны: права проверяет ядро,
+  а mount read-only запрещает запись даже в файлы с правом записи;
+- read-only конфигурации GPU runtimes, если есть: `/etc/OpenCL/vendors`,
+  `/etc/vulkan`, `/etc/glvnd`, `/etc/drirc`, `/etc/libva.conf`. Драйверы и ICD
+  из `/usr` видны и без GPU;
+- только при `PC_MCP_GPU_CARD=true` (`--gpu-card`): primary node `card*` того же
+  устройства с теми же ссылками. Он нужен лишь программам KMS (вывод на экран без
+  X/Wayland, DRM leases, `modetest`, `kmscube`). Если графического сеанса нет,
+  job может стать DRM master и переключить режим экрана; при работающем
+  композиторе master занят им, и job видит только чтение KMS-состояния.
+
+Что добавляется к поверхности атаки:
+
+- **ioctl драйвера DRM в ядре** (`i915`/`xe`/`amdgpu`): GEM/VM, отправка
+  command buffers, query. Это большой код ядра с собственной историей
+  уязвимостей. Ошибка в нём даёт выход из sandbox на уровень ядра. Namespaces и
+  `--cap-drop ALL` от этого не защищают, так как ioctl render node не требует
+  capabilities. seccomp-фильтр в sandbox не установлен. Держите ядро и firmware
+  GPU обновлёнными;
+- **код самого GPU**: job исполняет произвольные GPU kernels и shaders. Изоляцию
+  между контекстами GPU обеспечивают драйвер и аппаратура (ppGTT); утечки через
+  общий кеш и память видеоядра теоретически возможны;
+- **отказ в обслуживании**: долгий GPU kernel или большой объём памяти GPU
+  тормозят графику рабочего стола. Hang detection драйвера сбрасывает контекст.
+  Память встроенного видеоядра — это RAM, но cgroup RAM учитывает не всю память,
+  выделенную драйвером;
+- **сведения о системе**: модель, PCI ID, частоты, энергопотребление (`hwmon`),
+  при `card*` — подключённые мониторы и их EDID. Профайлинг (perf/OA, i915 PMU)
+  недоступен: он требует capabilities или sysctl
+  `dev.i915.perf_stream_paranoid=0`, их не меняйте.
+
+Права на узлы проверяет ядро по реальному uid/gid процесса сервера. Для
+`renderD*` нужна группа `render`, для `card*` — группа `video` (или ACL
+активного сеанса). Сервер не добавляет прав и не ищет обходов: при отсутствии
+узла или прав `pc_capabilities` показывает `gpu_error` и
+`execution_ready=false`, а каждый job завершается с причиной, пока настройку не
+выключат или не исправят причину.
 
 ## Защита, которая остаётся в обычном режиме
 

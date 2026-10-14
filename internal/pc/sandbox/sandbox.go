@@ -57,6 +57,12 @@ type Engine struct {
 	MaxProcesses        int
 	AllowPrivateNetwork bool
 	AllowHostNetwork    bool
+	// AllowGPU exposes one DRM render node (GPUDevice, or the only one) with its
+	// read-only PCI sysfs to every job; GPUCard adds the primary card* node.
+	// Operator-only; validated on every run and reported by Capabilities.
+	AllowGPU  bool
+	GPUDevice string
+	GPUCard   bool
 }
 
 func (e *Engine) Capabilities() map[string]any {
@@ -78,6 +84,9 @@ func (e *Engine) Capabilities() map[string]any {
 	}
 	if err == nil && e.AllowNetwork && e.HelperError != "" {
 		err = errors.New(e.HelperError)
+	}
+	if gpuErr := e.gpuCapabilities(m); err == nil {
+		err = gpuErr
 	}
 	m["execution_ready"] = err == nil
 	if err != nil {
